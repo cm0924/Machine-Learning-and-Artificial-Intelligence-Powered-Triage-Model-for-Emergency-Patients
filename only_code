@@ -1,0 +1,676 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# ---------------------------------------------------------
+# 1. Load the Raw Data (with encoding fix)
+# ---------------------------------------------------------
+try:
+    df = pd.read_csv('data.csv', delimiter=';', encoding='ISO-8859-1')
+except UnicodeDecodeError:
+    df = pd.read_csv('data.csv', delimiter=';', encoding='cp1254')
+
+print("Dataset Shape:", df.shape)
+print("\n--- First 5 Rows ---")
+print(df.head())
+
+print("\n--- Data Info & Types ---")
+print(df.info())
+
+# List of columns that are vital signs (should be numeric)
+vital_cols = ['SBP', 'DBP', 'HR', 'RR', 'BT', 'Saturation', 'NRS_pain']
+
+print("--- Inspecting Dirty Values in Vital Signs ---")
+for col in vital_cols:
+    # Get all unique values
+    unique_vals = df[col].unique()
+    
+    # Filter to find values that contain non-numeric characters (like '#BOŞ!' or '??')
+    # We use a regular expression to find anything that isn't a simple number
+    dirty_vals = [val for val in unique_vals if str(val).isalpha() or '!' in str(val) or '?' in str(val)]
+    
+    if len(dirty_vals) > 0:
+        print(f"\nColumn '{col}' contains these non-numeric errors:")
+        print(dirty_vals[:10]) # Show top 10 error examples
+
+# Create a temporary copy for visualization ONLY
+df_viz = df.copy()
+
+# Force convert vital columns to numeric (Errors become NaN)
+# This reveals the "Hidden" missing values
+cols_to_convert = ['Age', 'Patients number per hour', 'SBP', 'DBP', 'HR', 'RR', 'BT', 
+                   'Saturation', 'NRS_pain', 'Pain', 'Mental', 'Arrival mode', 'Injury']
+
+for col in cols_to_convert:
+    df_viz[col] = pd.to_numeric(df_viz[col], errors='coerce')
+
+# Now plot the Heatmap
+plt.figure(figsize=(14, 6))
+sns.heatmap(df_viz.isnull(), cbar=False, cmap='viridis', yticklabels=False)
+plt.title('TRUE Missing Values Map (Yellow = Missing Data)', fontsize=16)
+plt.xlabel('Features')
+plt.show()
+
+# Print exact percentage of missing data
+print("\n--- Missing Data Percentage ---")
+missing_percent = df_viz.isnull().mean() * 100
+print(missing_percent[missing_percent > 0].sort_values(ascending=False))
+
+# ---------------------------------------------------------
+# Step 1: Data Cleaning & Imputation
+# ---------------------------------------------------------
+import pandas as pd
+import numpy as np
+from sklearn.impute import SimpleImputer
+
+# 1. Fix the "Dirty" Data Types (Crucial First Step)
+# Your inspection showed text like '#BOŞ!' in numeric columns.
+# We use 'errors="coerce"' to turn those text errors into NaN (missing values) immediately.
+
+# Fix NRS_pain specifically first to avoid the TypeError you saw earlier
+df['NRS_pain'] = pd.to_numeric(df['NRS_pain'], errors='coerce')
+
+# Fix all other vital sign columns
+vital_cols = ['Age', 'Patients number per hour', 'SBP', 'DBP', 
+              'HR', 'RR', 'BT', 'Saturation', 'Pain', 
+              'Mental', 'Arrival mode', 'Injury']
+
+for col in vital_cols:
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+print("✅ Data types fixed. All text errors (like '#BOŞ!') are now NaN.")
+
+# 2. Smart Imputation (Filling the Missing Values)
+
+# A. Logic for Pain: 
+# If patient said "No" to Pain (Pain=0), their Score (NRS_pain) is 0.
+no_pain_mask = df['Pain'] == 0
+df.loc[no_pain_mask, 'NRS_pain'] = df.loc[no_pain_mask, 'NRS_pain'].fillna(0)
+
+# Fill remaining missing pain scores with the median
+df['NRS_pain'].fillna(df['NRS_pain'].median(), inplace=True)
+
+# B. Logic for Saturation:
+# Missing often means "Normal/Not Checked". Fill with median (usually ~98).
+df['Saturation'].fillna(df['Saturation'].median(), inplace=True)
+
+# C. Logic for Other Vitals:
+# Fill any remaining gaps (like SBP, HR) with the median
+imputer = SimpleImputer(strategy='median')
+# Note: We combine vital_cols and NRS_pain to ensure everything is covered
+cols_to_clean = vital_cols + ['NRS_pain']
+df[cols_to_clean] = imputer.fit_transform(df[cols_to_clean])
+
+print("✅ Imputation Complete. No missing values remain.")
+
+# ---------------------------------------------------------
+# Step 2: Verify Cleaning (Visualization)
+# ---------------------------------------------------------
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# 1. Heatmap Check
+# This should now be a solid color (purple) with NO yellow bars.
+plt.figure(figsize=(12, 4))
+sns.heatmap(df[cols_to_clean].isnull(), cbar=False, cmap='viridis', yticklabels=False)
+plt.title('Verification: Missing Values Heatmap (Should be Empty)')
+plt.show()
+
+# 2. Check the Cleaned Distributions
+# This confirms that filling with "median" didn't break the data
+fig, ax = plt.subplots(1, 3, figsize=(18, 5))
+
+# Pain Score
+sns.histplot(df['NRS_pain'], bins=10, kde=True, ax=ax[0], color='orange')
+ax[0].set_title('NRS Pain Score (Cleaned)')
+ax[0].set_xlabel('Score (0-10)')
+
+# Oxygen Saturation
+sns.histplot(df['Saturation'], bins=20, kde=True, ax=ax[1], color='green')
+ax[1].set_title('Oxygen Saturation (Cleaned)')
+ax[1].set_xlabel('SpO2 (%)')
+
+# Systolic BP
+sns.histplot(df['SBP'], bins=30, kde=True, ax=ax[2], color='blue')
+ax[2].set_title('Systolic BP (Cleaned)')
+ax[2].set_xlabel('mmHg')
+
+plt.tight_layout()
+plt.show()
+
+# ---------------------------------------------------------
+# Step 2.5: Outlier Detection & Handling
+# ---------------------------------------------------------
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# 1. Visualize Outliers using Boxplots
+# This helps us differentiate between "Sick Patients" and "Impossible Data"
+vitals_to_check = ['SBP', 'DBP', 'HR', 'RR', 'BT', 'Saturation']
+
+plt.figure(figsize=(15, 10))
+for i, col in enumerate(vitals_to_check, 1):
+    plt.subplot(2, 3, i)
+    sns.boxplot(y=df[col], color='skyblue')
+    plt.title(f'Boxplot of {col}')
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+plt.tight_layout()
+plt.show()
+
+# 2. Define Physiological Limits (Domain Knowledge)
+# We only remove/cap values that are biologically IMPOSSIBLE.
+# We DO NOT remove values just because they are high (e.g., HR 180 is real).
+
+print("--- Checking for Impossible Values ---")
+
+# Rule A: Oxygen Saturation cannot be > 100%
+# Error found: SpO2 of 500 or 120 is impossible.
+invalid_sat = df[df['Saturation'] > 100]
+print(f"Saturation > 100%: {len(invalid_sat)} cases found. Fixing...")
+# Fix: Cap at 100
+df['Saturation'] = df['Saturation'].clip(upper=100)
+
+# Rule B: Body Temp (BT) 
+# Error found: BT > 45C (likely missed decimal, e.g., 365 -> 36.5) or < 25C
+invalid_bt = df[(df['BT'] > 45) | (df['BT'] < 25)]
+print(f"Body Temp Errors (>45C or <25C): {len(invalid_bt)} cases found.")
+if len(invalid_bt) > 0:
+    print(invalid_bt['BT'].head())
+    # Fix: If > 100, divide by 10 (assuming missing decimal)
+    df.loc[df['BT'] > 100, 'BT'] = df.loc[df['BT'] > 100, 'BT'] / 10
+    # Drop remaining crazy values if any
+    df = df[(df['BT'] <= 45) & (df['BT'] >= 25)]
+
+# Rule C: Heart Rate (HR) and BP
+# Ranges: HR (0-300), SBP (0-300). Anything else is likely an error.
+df = df[(df['HR'] > 0) & (df['HR'] < 300)]
+df = df[(df['SBP'] > 0) & (df['SBP'] < 300)]
+df = df[(df['DBP'] > 0) & (df['DBP'] < 200)]
+
+print("✅ Impossible outliers removed/corrected.")
+print(f"New Dataset Shape: {df.shape}")
+
+# 3. Re-Visualize to Confirm
+plt.figure(figsize=(15, 10))
+for i, col in enumerate(vitals_to_check, 1):
+    plt.subplot(2, 3, i)
+    sns.boxplot(y=df[col], color='lightgreen')
+    plt.title(f'Cleaned {col}')
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+plt.tight_layout()
+plt.show()
+
+# ---------------------------------------------------------
+# Step 2.8: Text Cleaning (Fixed to keep 'Burn')
+# ---------------------------------------------------------
+print(f"Unique Complaints BEFORE cleaning: {df['Chief_complain'].nunique()}")
+
+# 1. Lowercase and Strip
+df['Chief_complain'] = df['Chief_complain'].astype(str).str.lower().str.strip()
+
+# 2. Remove Garbage ('??')
+def clean_garbage(text):
+    if '?' in text: return 'other'
+    return text
+df['Chief_complain'] = df['Chief_complain'].apply(clean_garbage)
+
+# 3. INTELLIGENT GROUPING (The Fix)
+# We group variations so they survive the "Rare" filter
+# Example: "burn, arm" and "chemical burn" -> BOTH become "burn"
+df.loc[df['Chief_complain'].str.contains('burn', na=False), 'Chief_complain'] = 'burn'
+df.loc[df['Chief_complain'].str.contains('fracture', na=False), 'Chief_complain'] = 'fracture'
+df.loc[df['Chief_complain'].str.contains('trauma', na=False), 'Chief_complain'] = 'trauma'
+df.loc[df['Chief_complain'].str.contains('lacera', na=False), 'Chief_complain'] = 'laceration'
+
+# 4. Manual Mapping
+replacements = {
+    'abd pain': 'abdominal pain',
+    'abd. pain': 'abdominal pain',
+    'abdomianl pain': 'abdominal pain',
+    'rt ': 'right ',
+    'lt ': 'left ',
+    'sob': 'dyspnea',
+    'shortness of breath': 'dyspnea',
+    'mva': 'traffic accident',
+    'ta': 'traffic accident',
+    'diarrhea': 'diarrhoea'
+}
+df['Chief_complain'] = df['Chief_complain'].replace(replacements, regex=True)
+
+# 5. Group Rare Complaints
+# Now that we grouped "burns", they should have a count >= 5 and survive!
+complaint_counts = df['Chief_complain'].value_counts()
+rare_complaints = complaint_counts[complaint_counts < 5].index
+df.loc[df['Chief_complain'].isin(rare_complaints), 'Chief_complain'] = 'other'
+
+print(f"Unique Complaints AFTER cleaning: {df['Chief_complain'].nunique()}")
+print("Burn count:", df[df['Chief_complain'] == 'burn'].shape[0]) 
+# You should now see 'Burn count: 5' (or more)
+
+# ---------------------------------------------------------
+# Step 3: Feature Engineering & Balancing
+# ---------------------------------------------------------
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from imblearn.over_sampling import SMOTE
+import pandas as pd
+
+# 1. Feature Selection
+# We only select variables that are available at the time of Triage.
+# We DROP 'Diagnosis', 'Disposition', etc., because they happen AFTER triage.
+feature_cols = ['Sex', 'Age', 'Arrival mode', 'Injury', 'Chief_complain', 
+                'Mental', 'Pain', 'NRS_pain', 'SBP', 'DBP', 'HR', 'RR', 'BT', 'Saturation']
+target_col = 'KTAS_expert'
+
+X = df[feature_cols].copy()
+y = df[target_col].copy()
+
+# 2. Encode Text Features
+# The AI cannot read text like "Abdominal Pain". We convert it to numbers.
+le = LabelEncoder()
+# Ensure it's string format before encoding
+X['Chief_complain'] = X['Chief_complain'].astype(str)
+X['Chief_complain'] = le.fit_transform(X['Chief_complain'])
+
+print(f"✅ Features Prepared. X shape: {X.shape}")
+
+# ---------------------------------------------------------
+# Inspecting the "Chief_complain" Mapping
+# ---------------------------------------------------------
+import pandas as pd
+
+# 1. Let's look at the mapping
+# The 'le' object from Step 3 stores the dictionary
+# le.classes_ holds the original text. The index is the number.
+
+# Create a temporary dataframe to show the mapping
+mapping = pd.DataFrame({
+    'Complaint_ID': range(len(le.classes_)),
+    'Original_Text': le.classes_
+})
+
+# 2. Check specific critical complaints
+# Let's see what number "chest pain" or "dyspnea" (difficulty breathing) got
+print("--- Complaint ID Examples ---")
+print(mapping[mapping['Original_Text'].str.contains('chest pain', case=False)].head(5))
+print("\n")
+print(mapping[mapping['Original_Text'].str.contains('dyspnea', case=False)].head(5))
+
+# 3. See the most common complaints and their IDs
+# We map the numbers back to text to see what the top complaints are
+top_complaints = df['Chief_complain'].value_counts().head(5)
+print("\n--- Top 5 Most Common Complaints & Their IDs ---")
+for text_val, count in top_complaints.items():
+    # Note: In the dataframe 'df', Chief_complain is text. 
+    # But in 'X', it is a number. 
+    # Let's find the ID for this text:
+    try:
+        my_id = le.transform([str(text_val)])[0]
+        print(f"Complaint: '{text_val}' --> ID: {my_id} (Count: {count})")
+    except:
+        pass
+
+# 3. Train-Test Split (CRITICAL STEP)
+# We split BEFORE balancing to prevent "Data Leakage".
+# The Test set must remain 100% real, original data.
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+print(f"Data Split: {len(X_train)} Training samples, {len(X_test)} Test samples.")
+
+# 4. Balancing with SMOTE
+# This creates synthetic patients for the minority classes (Level 1, 2, 5)
+# so the AI treats all urgency levels as equally important.
+print("\nApplying SMOTE to balance the training data... (this may take a moment)")
+smote = SMOTE(random_state=42)
+X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
+
+# Compare Counts
+print("\n--- Class Distribution Change ---")
+print("Before Balancing (Original Train):")
+print(y_train.value_counts().sort_index())
+print("\nAfter Balancing (SMOTE Train):")
+print(y_train_balanced.value_counts().sort_index())
+
+# ---------------------------------------------------------
+# Fix Target Labels for XGBoost/LightGBM
+# ---------------------------------------------------------
+# XGBoost requires classes to be [0, 1, 2, 3, 4], but yours are [1, 2, 3, 4, 5].
+# We will shift them down by 1.
+print(f"Original Labels: {y_train.unique()}")
+
+y_train = y_train - 1
+y_test = y_test - 1
+
+print(f"Adjusted Labels for Training: {y_train.unique()}")
+print("(Note: We will add +1 back to the predictions at the very end to match KTAS levels)")
+
+# ---------------------------------------------------------
+# Step 5: Multi-Model Training, Tuning & Comparison
+# ---------------------------------------------------------
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from imblearn.pipeline import Pipeline as ImbPipeline
+from sklearn.metrics import accuracy_score, roc_auc_score, classification_report
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# 1. Setup Cross-Validation Strategy
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# 2. Define the Models and their Hyperparameter Grids
+# We use StandardScaler because SVM, KNN, and LR require scaled data.
+# Tree models (RF, XGB) don't strictly need it, but it doesn't hurt.
+
+models_config = [
+    {
+        'name': 'Logistic Regression',
+        'model': LogisticRegression(solver='liblinear', random_state=42),
+        'params': {
+            'classifier__C': [0.1, 1, 10],
+            'classifier__penalty': ['l1', 'l2']
+        }
+    },
+    {
+        'name': 'Random Forest',
+        'model': RandomForestClassifier(random_state=42),
+        'params': {
+            'classifier__n_estimators': [100, 200],
+            'classifier__max_depth': [None, 10, 20],
+            'classifier__min_samples_split': [2, 5]
+        }
+    },
+    {
+        'name': 'XGBoost',
+        'model': XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42),
+        'params': {
+            'classifier__n_estimators': [100, 200],
+            'classifier__learning_rate': [0.01, 0.1],
+            'classifier__max_depth': [3, 6, 10]
+        }
+    },
+    {
+        'name': 'LightGBM',
+        'model': LGBMClassifier(random_state=42, verbose=-1),
+        'params': {
+            'classifier__n_estimators': [100, 200],
+            'classifier__learning_rate': [0.01, 0.1],
+            'classifier__num_leaves': [31, 50]
+        }
+    },
+    {
+        'name': 'SVM',
+        'model': SVC(probability=True, random_state=42), # Probability=True needed for AUC
+        'params': {
+            'classifier__C': [0.1, 1, 10],
+            'classifier__kernel': ['rbf', 'linear']
+        }
+    },
+    {
+        'name': 'KNN',
+        'model': KNeighborsClassifier(),
+        'params': {
+            'classifier__n_neighbors': [3, 5, 7, 9],
+            'classifier__weights': ['uniform', 'distance']
+        }
+    },
+    {
+        'name': 'Decision Tree',
+        'model': DecisionTreeClassifier(random_state=42),
+        'params': {
+            'classifier__max_depth': [None, 10, 20, 30],
+            'classifier__min_samples_split': [2, 5, 10]
+        }
+    }
+]
+
+# 3. Loop Through Models
+results = []
+best_estimators = {}
+
+print(f"{'Model':<20} | {'Status':<15}")
+print("-" * 40)
+
+for config in models_config:
+    model_name = config['name']
+    print(f"{model_name:<20} | Training...", end='\r')
+    
+    # Create Pipeline: Scale -> Balance (SMOTE) -> Classify
+    # Scaling is crucial for KNN, SVM, LR
+    pipeline = ImbPipeline([
+        ('scaler', StandardScaler()), 
+        ('balancing', SMOTE(random_state=42)),
+        ('classifier', config['model'])
+    ])
+    
+    # Grid Search
+    grid = GridSearchCV(
+        estimator=pipeline,
+        param_grid=config['params'],
+        cv=cv,
+        scoring='accuracy',
+        n_jobs=-1
+    )
+    
+    # Train
+    grid.fit(X_train, y_train)
+    
+    # Evaluate on Test Set
+    best_model = grid.best_estimator_
+    y_pred = best_model.predict(X_test)
+    y_prob = best_model.predict_proba(X_test)
+    
+    # Metrics
+    acc = accuracy_score(y_test, y_pred)
+    auc = roc_auc_score(y_test, y_prob, multi_class='ovr')
+    
+    # Store
+    results.append({
+        'Model': model_name,
+        'Test Accuracy': acc,
+        'Test AUC': auc,
+        'Best Params': grid.best_params_
+    })
+    
+    best_estimators[model_name] = best_model
+    print(f"{model_name:<20} | Done (Acc: {acc:.4f})")
+
+# 4. Display Comparison
+results_df = pd.DataFrame(results).sort_values(by='Test Accuracy', ascending=False)
+print("\n--- Final Model Comparison ---")
+print(results_df[['Model', 'Test Accuracy', 'Test AUC']])
+
+# 5. Visualize Performance
+plt.figure(figsize=(12, 6))
+sns.barplot(x='Test Accuracy', y='Model', data=results_df, palette='viridis')
+plt.title('Model Comparison: Test Accuracy')
+plt.xlim(0, 1.0)
+plt.axvline(0.5, color='r', linestyle='--', label='Random Guessing')
+plt.legend()
+plt.show()
+
+# ---------------------------------------------------------
+# Step 6: Detailed Evaluation of the WINNER
+# ---------------------------------------------------------
+# Automatically pick the best model
+winner_name = results_df.iloc[0]['Model']
+winner_model = best_estimators[winner_name]
+
+print(f"\n🏆 The Best Performing Model is: {winner_name}")
+print("Generating detailed report for the winner...\n")
+
+y_pred_win = winner_model.predict(X_test)
+
+print(classification_report(y_test, y_pred_win))
+
+# Confusion Matrix for the Winner
+plt.figure(figsize=(8, 6))
+sns.heatmap(confusion_matrix(y_test, y_pred_win), annot=True, fmt='d', cmap='Greens')
+plt.title(f'Confusion Matrix - {winner_name}')
+plt.ylabel('Actual')
+plt.xlabel('Predicted')
+plt.show()
+
+# ---------------------------------------------------------
+# Step 6.5: Model Explainability with SHAP (Universal Fix)
+# ---------------------------------------------------------
+import shap
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+# 1. Extract Model & Scaler
+try:
+    final_model = winner_model.named_steps['classifier']
+    scaler = winner_model.named_steps['scaler']
+    X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
+except AttributeError:
+    final_model = winner_model
+    X_test_scaled = X_test
+
+# 2. Calculate SHAP Values
+print("Calculating SHAP values...")
+explainer = shap.TreeExplainer(final_model)
+shap_values = explainer.shap_values(X_test_scaled)
+
+# 3. ROBUST EXTRACTION LOGIC
+# We need to find where the "Critical" class (Level 1 / Index 0) is hiding
+if isinstance(shap_values, list):
+    # Format: List of [N_samples, N_features]
+    print("Detected SHAP format: List")
+    shap_data_summary = shap_values[0] # Class 0
+elif isinstance(shap_values, np.ndarray) and len(shap_values.shape) == 3:
+    # Format: [N_samples, N_features, N_classes]
+    print("Detected SHAP format: 3D Array")
+    shap_data_summary = shap_values[:, :, 0] # All samples, All features, Class 0
+else:
+    # Format: [N_samples, N_features] (Binary/Regression)
+    print("Detected SHAP format: 2D Array")
+    shap_data_summary = shap_values
+
+# 4. Summary Plots
+plt.figure(figsize=(10, 6))
+plt.title("Feature Importance (Global - Level 1 Risk)")
+shap.summary_plot(shap_data_summary, X_test, plot_type="bar", show=False)
+plt.show()
+
+plt.figure(figsize=(10, 6))
+plt.title("Detailed Feature Impact (Beeswarm)")
+shap.summary_plot(shap_data_summary, X_test, show=False)
+plt.show()
+
+# 5. Single Patient Waterfall Plot
+patient_idx = 0 
+predicted_class_idx = y_pred_win[patient_idx]
+
+print(f"\nExplaining Patient #{patient_idx} (Predicted Level {predicted_class_idx + 1})")
+
+# --- SAFE SLICING FOR SINGLE PATIENT ---
+if isinstance(shap_values, list):
+    # List case
+    shap_patient_1d = shap_values[predicted_class_idx][patient_idx]
+    base_val_raw = explainer.expected_value[predicted_class_idx]
+elif len(np.array(shap_values).shape) == 3:
+    # 3D Array case: [Sample, Feature, Class]
+    shap_patient_1d = shap_values[patient_idx, :, predicted_class_idx]
+    
+    # Handle base value extraction for 3D case
+    if isinstance(explainer.expected_value, np.ndarray) and len(explainer.expected_value) > 1:
+         base_val_raw = explainer.expected_value[predicted_class_idx]
+    else:
+         base_val_raw = explainer.expected_value
+else:
+    # 2D Array case
+    shap_patient_1d = shap_values[patient_idx]
+    base_val_raw = explainer.expected_value
+
+# Helper to ensure Base Value is a clean float
+def clean_float(val):
+    if hasattr(val, 'item'): return val.item()
+    if hasattr(val, '__iter__'): return clean_float(val[0])
+    return float(val)
+
+base_value = clean_float(base_val_raw)
+
+print(f"SHAP Shape: {shap_patient_1d.shape} (Should be (14,))")
+print(f"Base Value: {base_value}")
+
+# Plot
+plt.figure(figsize=(10, 6))
+explanation = shap.Explanation(
+    values=shap_patient_1d,
+    base_values=base_value,
+    data=X_test.iloc[patient_idx, :].values,
+    feature_names=X_test.columns
+)
+plt.title(f"Why Level {predicted_class_idx+1}?")
+shap.plots.waterfall(explanation, show=False)
+plt.show()
+
+# ---------------------------------------------------------
+# Step 7: Save Artifacts for Deployment (Modified)
+# ---------------------------------------------------------
+import joblib
+
+print("Saving system files...")
+
+# --- NEW: Identify the Algorithm ---
+# This logic checks if 'winner_model' is a Pipeline or a standalone Model
+try:
+    # If it's a pipeline, get the step named 'classifier'
+    algo_object = winner_model.named_steps['classifier']
+except (AttributeError, KeyError):
+    # If it's just a raw model, use it directly
+    algo_object = winner_model
+
+algo_name = type(algo_object).__name__
+
+print(f"\n🚨 ALERT: You are currently saving the '{algo_name}' algorithm.")
+if "RandomForest" in algo_name:
+    print("ℹ️ Note: This is an Ensemble method (Bagging).")
+elif "LGBM" in algo_name or "XGB" in algo_name:
+    print("ℹ️ Note: This is a Gradient Boosting method.")
+print("-" * 40)
+# ---------------------------------------------------
+
+# 1. Save the Trained Model (The Brain)
+# This saves whatever is in 'winner_model'
+joblib.dump(winner_model, 'triage_model.pkl')
+print(f"✅ Model saved: triage_model.pkl")
+
+# 2. Save the Symptom Dictionary (The Translator)
+# We need 'le' (LabelEncoder) to translate "Chest Pain" -> 45 later
+try:
+    joblib.dump(le, 'label_encoder.pkl')
+    print(f"✅ Label Encoder saved: label_encoder.pkl")
+except NameError:
+    # Fallback: Re-create it if missing
+    print("⚠️ 'le' not found in memory. Recreating it from dataframe...")
+    from sklearn.preprocessing import LabelEncoder
+    le_new = LabelEncoder()
+    # Ensure 'df' is loaded and 'Chief_complain' is cleaned
+    le_new.fit(df['Chief_complain'].astype(str))
+    joblib.dump(le_new, 'label_encoder.pkl')
+    print(f"✅ Label Encoder (Recreated) saved: label_encoder.pkl")
+
+# 3. Save Class Names (The Output)
+# Maps 0->Level 1, 1->Level 2, etc.
+class_names = {0: 1, 1: 2, 2: 3, 3: 4, 4: 5}
+joblib.dump(class_names, 'class_names.pkl')
+print(f"✅ Class mappings saved: class_names.pkl")
+
+print("\nAll systems ready for Dashboard!")
+

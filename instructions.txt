@@ -1,0 +1,2 @@
+conda activate fyp_env
+python -m streamlit run app.py
