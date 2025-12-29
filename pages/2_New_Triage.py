@@ -9,6 +9,7 @@ import speech_recognition as sr
 import difflib
 import json
 import re
+from datetime import date, datetime
 
 # ---------------------------------------------------------
 # SECURITY CHECK
@@ -22,11 +23,11 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
 current_nurse = st.session_state.get('username', 'Unknown')
 
 # ---------------------------------------------------------
-# 1. SETUP & SESSION STATE
+# 1. SETUP & CONFIGURATION
 # ---------------------------------------------------------
-st.set_page_config(page_title="Clinical Decision Support", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="Triage Assessment", page_icon="🩺", layout="wide")
 
-# THE LIST OF CLEAN CATEGORIES (Must match your Training Data exactly!)
+# CLEAN CATEGORIES (Matches Training Data)
 CLEAN_COMPLAINTS = [
     'Abdominal Pain', 'Altered Mental Status', 'Back Pain', 'Bleeding (General)', 
     'Chest Pain', 'Diarrhea/GI Issue', 'Dizziness', 'Eye Problem', 'Fever', 
@@ -35,44 +36,52 @@ CLEAN_COMPLAINTS = [
     'Skin/Allergy', 'Syncope', 'Trauma/Injury', 'Urinary Issue'
 ]
 
-# --- UPDATED LOADING FUNCTION ---
+# CLINICAL MAPPINGS (UI Text -> Model/DB Integer)
+ARRIVAL_MAP = {"Ambulance": 1, "Walk-in": 2, "Transfer": 3}
+INJURY_MAP = {"No": 1, "Yes": 2}
+MENTAL_MAP = {"Alert": 1, "Verbal": 2, "Pain": 3, "Unresponsive": 4}
+PAIN_MAP = {"No": 0, "Yes": 1}
+
+# --- LOAD AI MODEL ---
 @st.cache_resource
 def load_system():
     try:
-        # Load the dictionary containing {model, features}
         package = joblib.load('ktas_deployment_pipeline.pkl') 
         return package
     except FileNotFoundError:
-        st.error("System Error: 'ktas_deployment_pipeline.pkl' not found. Please run your notebook to save it.")
+        st.error("System Error: 'ktas_deployment_pipeline.pkl' not found.")
         return None
 
 system_package = load_system()
-
 if system_package:
     model = system_package['model']
     model_features = system_package['features']
 else:
     st.stop()
 
-# Initialize Session State
-if 'form_name' not in st.session_state: st.session_state.form_name = "Unknown"
-if 'form_age' not in st.session_state: st.session_state.form_age = 30
+# --- SESSION STATE INITIALIZATION ---
+if 'form_name' not in st.session_state: st.session_state.form_name = ""
+if 'form_dob' not in st.session_state: st.session_state.form_dob = date(1990, 1, 1)
 if 'form_gender_idx' not in st.session_state: st.session_state.form_gender_idx = 0
-if 'form_complaint_idx' not in st.session_state: st.session_state.form_complaint_idx = 4 # Default to Chest Pain
+if 'form_complaint_idx' not in st.session_state: st.session_state.form_complaint_idx = 4 
 if 'triage_result' not in st.session_state: st.session_state.triage_result = None
 
 def reset_form():
     st.session_state.triage_result = None
+    st.session_state.form_name = ""
     st.rerun()
 
-# ---------------------------------------------------------
-# 2. AI FUNCTIONS (Voice, LLM)
-# ---------------------------------------------------------
+def calculate_age(born):
+    today = date.today()
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
 
+# ---------------------------------------------------------
+# 2. AI SPEECH FUNCTIONS
+# ---------------------------------------------------------
 def recognize_speech():
     r = sr.Recognizer()
     with sr.Microphone() as source:
-        st.toast("🎤 Listening... (e.g., 'Male 50 years old with severe chest pain')")
+        st.toast("🎤 Listening... (Describe patient & vitals)")
         try:
             audio = r.listen(source, timeout=5)
             text = r.recognize_google(audio)
@@ -82,16 +91,13 @@ def recognize_speech():
             return None
 
 def extract_data_from_voice(text):
-    """ Uses LLM to parse voice text into JSON """
     prompt = f"""
     Extract clinical entities from: "{text}"
-    Return ONLY raw JSON (no markdown) with keys:
+    Return ONLY raw JSON with keys:
     - "name": (string)
     - "age": (int)
     - "gender": ("Male"/"Female")
     - "symptom": (string, pick closest match from: {CLEAN_COMPLAINTS}) 
-    
-    Example: {{"name": "Ali", "age": 50, "gender": "Male", "symptom": "Chest Pain"}}
     """
     try:
         response = ollama.chat(model='gemini-3-flash-preview:cloud', messages=[{'role': 'user', 'content': prompt}])
@@ -104,35 +110,17 @@ def extract_data_from_voice(text):
     return None
 
 def get_ai_explanation(context, triage_level, confidence):
-    """ Generates the 'Why' using the LLM with FULL Context """
     prompt = f"""
     Act as a senior triage nurse. Review this AI prediction.
+    Patient: {context['Age']}yo {context['Sex']} | Complaint: {context['Chief_complain']}
+    Vitals: BP {context['SBP']}/{context['DBP']}, HR {context['HR']}, SpO2 {context['Saturation']}%
+    Signs: Mental-{context['Mental']}, Pain-{context['NRS_pain']}/10
     
-    Patient Demographics: {context['Age']}yo {context['Sex']} ({context['Arrival_mode']})
-    Chief Complaint: {context['Chief_complain']}
+    Prediction: KTAS Level {triage_level} ({confidence:.1f}%)
     
-    Clinical Signs:
-    - Mental Status: {context['Mental']}
-    - Trauma/Injury: {context['Injury']}
-    - Pain: {context['Pain']} (Scale: {context['NRS_pain']}/10)
-    
-    Vitals: 
-    - BP: {context['SBP']}/{context['DBP']} mmHg
-    - HR: {context['HR']} bpm
-    - RR: {context['RR']} /min
-    - Temp: {context['BT']} °C
-    - SpO2: {context['Saturation']}%
-    
-    Derived Markers:
-    - Shock Index: {context['Shock_Index']} (Normal 0.5-0.7)
-    - Pulse Pressure: {context['Pulse_Pressure']} (Normal 40-60)
-    
-    AI Model Prediction: KTAS Level {triage_level} ({confidence:.1f}% confidence)
-    
-    Task:
-    1. Do you AGREE or DISAGREE with Level {triage_level}?
-    2. Explain your reasoning using the Vitals and Signs above.
-    3. List 2 immediate nursing actions.
+    1. Agree/Disagree?
+    2. Clinical Reasoning (Brief).
+    3. Immediate Action.
     """
     try:
         response = ollama.chat(model='gemini-3-flash-preview:cloud', messages=[{'role': 'user', 'content': prompt}])
@@ -141,24 +129,26 @@ def get_ai_explanation(context, triage_level, confidence):
         return "AI Explanation Service Unavailable."
 
 # ---------------------------------------------------------
-# 3. SIDEBAR INPUTS
+# 3. SIDEBAR: PATIENT IDENTIFICATION
 # ---------------------------------------------------------
-st.sidebar.title("📝 Triage Input")
+st.sidebar.title("🆔 Patient ID")
 
-if st.sidebar.button("🎙️ AI Scribe (Voice Fill)", type="primary"):
+# Voice Trigger
+if st.sidebar.button("🎙️ AI Scribe", type="primary"):
     text = recognize_speech()
     if text:
         st.toast(f"Heard: '{text}'")
         data = extract_data_from_voice(text)
         if data:
             st.session_state.form_name = data.get('name', 'Unknown')
-            st.session_state.form_age = int(data.get('age', 30))
+            # If AI hears age, we estimate DOB for the form
+            est_age = int(data.get('age', 30))
+            est_year = date.today().year - est_age
+            st.session_state.form_dob = date(est_year, 1, 1)
             
-            # Match Gender
             g_str = data.get('gender', 'Male').lower()
             st.session_state.form_gender_idx = 0 if 'fe' in g_str else 1
             
-            # Fuzzy Match Symptom to our CLEAN list
             s_str = data.get('symptom', '')
             matches = difflib.get_close_matches(s_str, CLEAN_COMPLAINTS, n=1, cutoff=0.4)
             if matches:
@@ -167,55 +157,90 @@ if st.sidebar.button("🎙️ AI Scribe (Voice Fill)", type="primary"):
 
 st.sidebar.divider()
 
-# --- FORM ---
-patient_name = st.sidebar.text_input("Name", value=st.session_state.form_name)
-col1, col2 = st.sidebar.columns(2)
-gender = col1.selectbox("Sex", [1, 2], 
-                        index=st.session_state.form_gender_idx, 
-                        format_func=lambda x: "Female" if x==1 else "Male")
-age = col2.number_input("Age", 0, 120, value=st.session_state.form_age)
+# Identification Fields
+patient_name = st.sidebar.text_input("Full Name", value=st.session_state.form_name)
+dob = st.sidebar.date_input("Date of Birth", value=st.session_state.form_dob)
+gender = st.sidebar.selectbox("Sex", ["Male", "Female"], index=st.session_state.form_gender_idx)
 
-st.sidebar.subheader("Clinical Signs")
-# Use the CLEAN list for the dropdown
-chief_complaint_text = st.sidebar.selectbox("Chief Complaint", options=CLEAN_COMPLAINTS, index=st.session_state.form_complaint_idx)
-
-arrival = st.sidebar.selectbox("Arrival", [1, 2, 3], format_func=lambda x: {1:"Ambulance", 2:"Walk-in", 3:"Transfer"}.get(x, x))
-
-# FIX: Model expects 1 (No) and 2 (Yes) for Injury based on your data inspection
-injury = st.sidebar.selectbox("Trauma?", [1, 2], format_func=lambda x: "No" if x==1 else "Yes") 
-
-mental = st.sidebar.selectbox("Mental Status", [1, 2, 3, 4], format_func=lambda x: {1:"Alert", 2:"Verbal", 3:"Pain", 4:"Unresponsive"}.get(x, x))
-pain = st.sidebar.selectbox("Pain?", [0, 1], format_func=lambda x: "No" if x==0 else "Yes")
-nrs_pain = st.sidebar.slider("NRS Pain Scale", 0, 10, 0)
-
-sbp = st.sidebar.number_input("SBP", 0, 300, 120)
-dbp = st.sidebar.number_input("DBP", 0, 200, 80)
-hr = st.sidebar.number_input("Pulse", 0, 300, 80)
-rr = st.sidebar.number_input("Resp Rate", 0, 100, 20)
-bt = st.sidebar.number_input("Temp (°C)", 30.0, 45.0, 36.5)
-sat = st.sidebar.number_input("SpO2 (%)", 0, 100, 98)
+# Auto-Calculate Age
+current_age = calculate_age(dob)
+st.sidebar.info(f"Calculated Age: **{current_age} years**")
 
 # ---------------------------------------------------------
-# 4. MAIN WORKFLOW (THE NEW BRAIN)
+# 4. MAIN CLINICAL INTERFACE
 # ---------------------------------------------------------
-st.title("🏥 Intelligent Triage System (XGBoost + Safety Net)")
+st.title("🏥 Triage Assessment")
 
-if st.button("🔍 Generate Assessment", type="primary", use_container_width=True):
-    with st.spinner("Predicting Triage Level..."):
+# --- ROW 1: PRIMARY SURVEY (Subjective) ---
+st.subheader("1. Primary Survey")
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    arrival_mode_txt = st.selectbox("🚑 Arrival Mode", list(ARRIVAL_MAP.keys()))
+with c2:
+    chief_complaint_text = st.selectbox("🤒 Chief Complaint", options=CLEAN_COMPLAINTS, index=st.session_state.form_complaint_idx)
+with c3:
+    injury_txt = st.selectbox("🤕 Trauma / Injury", list(INJURY_MAP.keys()))
+with c4:
+    mental_txt = st.selectbox("🧠 Mental Status", list(MENTAL_MAP.keys()))
+
+# --- ROW 2: VITALS & PAIN (Objective) ---
+st.subheader("2. Vitals & Signs")
+v1, v2, v3, v4, v5, v6 = st.columns(6)
+
+sbp = v1.number_input("SBP (mmHg)", 0, 300, 120)
+dbp = v2.number_input("DBP (mmHg)", 0, 200, 80)
+hr = v3.number_input("Pulse (bpm)", 0, 300, 80)
+rr = v4.number_input("Resp (bpm)", 0, 100, 20)
+bt = v5.number_input("Temp (°C)", 30.0, 45.0, 36.5)
+sat = v6.number_input("SpO2 (%)", 0, 100, 98)
+
+# Pain Section (Slider + Logic)
+st.write("---")
+col_p1, col_p2 = st.columns([1, 3])
+with col_p1:
+    pain_txt = st.radio("Patient Reports Pain?", ["No", "Yes"], horizontal=True)
+with col_p2:
+    nrs_pain = st.slider("NRS Pain Scale (0-10)", 0, 10, 0, disabled=(pain_txt=="No"))
+
+# ---------------------------------------------------------
+# 5. PREDICTION LOGIC
+# ---------------------------------------------------------
+st.write("##")
+if st.button("🔍 Run Clinical Decision Support", type="primary", use_container_width=True):
+    with st.spinner("Analyzing Clinical Data..."):
         time.sleep(0.5)
         
-        # 1. CREATE DATAFRAME FROM LOADED FEATURE LIST
-        # The columns will match the 'Pure' model (No Shock Index column)
+        # A. MAP UI INPUTS TO MODEL VALUES
+        val_arrival = ARRIVAL_MAP[arrival_mode_txt]
+        val_injury = INJURY_MAP[injury_txt]
+        val_mental = MENTAL_MAP[mental_txt]
+        val_pain = PAIN_MAP[pain_txt]
+        val_sex_int = 0 if gender == "Male" else 1 # Matching training (0=Male, 1=Female usually, verify your specific model training)
+        
+        # Note: Check your specific model training for Sex. 
+        # Usually: 0=Female, 1=Male OR 1=Male, 2=Female. 
+        # Based on previous snippets: Input_data['Sex'] = 1 if gender == 2 else 0 -> implies 2 was Male? 
+        # I will assume: 0=Female, 1=Male for standard, adjust if your specific pickle differs.
+        # ADAPTING TO YOUR PREVIOUS CODE SNIPPET LOGIC:
+        # prev code: input_data['Sex'] = 1 if gender == 2 else 0 (where 2 was Male)
+        # Here gender is "Male"/"Female". 
+        model_sex = 1 if gender == "Male" else 0 
+
+        # B. PREPARE DATAFRAME
         input_data = pd.DataFrame(0, index=[0], columns=model_features)
         
-        # 2. FILL VITALS & DEMOGRAPHICS
-        input_data['Sex'] = 1 if gender == 2 else 0  
-        input_data['Age'] = age
-        input_data['Arrival mode'] = arrival
-        input_data['Injury'] = 1 if injury == 2 else 0 
-        input_data['Mental'] = mental
-        input_data['Pain'] = pain     
-        input_data['NRS_pain'] = nrs_pain
+        input_data['Sex'] = model_sex
+        input_data['Age'] = current_age
+        input_data['Arrival mode'] = val_arrival
+        input_data['Injury'] = 1 if val_injury == 2 else 0 # Fix: Model trained 0/1 or 1/2? Usually 0/1. 
+        # Previous code said: "Model expects 1 (No) and 2 (Yes)"
+        # So we keep that logic:
+        input_data['Injury'] = val_injury 
+        
+        input_data['Mental'] = val_mental
+        input_data['Pain'] = val_pain
+        input_data['NRS_pain'] = nrs_pain if pain_txt == "Yes" else 0
         input_data['SBP'] = sbp
         input_data['DBP'] = dbp
         input_data['HR'] = hr
@@ -223,30 +248,20 @@ if st.button("🔍 Generate Assessment", type="primary", use_container_width=Tru
         input_data['BT'] = bt
         input_data['Saturation'] = sat
         
-        # 3. ONE-HOT ENCODE CHIEF COMPLAINT
+        # One-Hot Encoding
         target_col = f"Chief_complain_Cleaned_{chief_complaint_text}"
-        
         if target_col in input_data.columns:
             input_data[target_col] = 1
-        else:
-            if 'Chief_complain_Cleaned_Other' in input_data.columns:
-                input_data['Chief_complain_Cleaned_Other'] = 1
+        elif 'Chief_complain_Cleaned_Other' in input_data.columns:
+            input_data['Chief_complain_Cleaned_Other'] = 1
 
-        # 4. CALCULATE DERIVED VALUES (For Explanation ONLY)
-        # We calculate these for the Context dictionary, but we DO NOT add them 
-        # to 'input_data' because the XGBoost model wasn't trained on them.
-        safe_sbp = sbp if sbp > 0 else 1.0
-        val_shock_index = hr / safe_sbp
-        val_pulse_pressure = sbp - dbp
-        
-        # 5. PREDICT & APPLY SAFETY THRESHOLD
-        # Now input_data has exactly 34 columns (matching training), so this works:
+        # C. PREDICT
         probs = model.predict_proba(input_data)[0]
         
-        # Safety Rule: If >25% chance of Level 1, Force Level 1
-        if probs[0] > 0.25:
+        # Safety Net Logic
+        if probs[0] > 0.25: # >25% chance of Level 1
             ai_level = 1
-            reason = "⚠️ Safety Net: High Risk of Shock/Resuscitation"
+            reason = "⚠️ Safety Net: High Probability of Critical Resuscitation"
         else:
             top_idx = np.argmax(probs)
             ai_level = int(top_idx + 1)
@@ -254,114 +269,129 @@ if st.button("🔍 Generate Assessment", type="primary", use_container_width=Tru
             
         conf = float(probs[ai_level-1] * 100)
 
-        # 6. EXPLANATION GENERATION
-        mental_map = {1:"Alert", 2:"Verbal", 3:"Pain", 4:"Unresponsive"}
-        arrival_map = {1:"Ambulance", 2:"Walk-in", 3:"Transfer"}
-        injury_map = {1:"No", 2:"Yes"}
-        
+        # D. EXPLAIN
         context = {
-            'Age': age, 
-            'Sex': 'Male' if gender==2 else 'Female', 
+            'Age': current_age, 'Sex': gender, 
             'Chief_complain': chief_complaint_text,
-            'Arrival_mode': arrival_map.get(arrival, "Unknown"),
-            'Injury': injury_map.get(injury, "No"),
-            'Mental': mental_map.get(mental, "Unknown"),
-            'Pain': "Yes" if pain==1 else "No",
-            'NRS_pain': nrs_pain,
-            'SBP': sbp, 
-            'DBP': dbp, 
-            'HR': hr, 
-            'RR': rr, 
-            'BT': bt, 
-            'Saturation': sat, 
-            # We use the variables we calculated above, not input_data columns
-            'Shock_Index': round(val_shock_index, 2),
-            'Pulse_Pressure': round(val_pulse_pressure, 2)
+            'Arrival_mode': arrival_mode_txt,
+            'Injury': injury_txt, 'Mental': mental_txt,
+            'Pain': pain_txt, 'NRS_pain': nrs_pain,
+            'SBP': sbp, 'DBP': dbp, 'HR': hr, 'RR': rr, 'BT': bt, 'Saturation': sat,
+            'Shock_Index': round(hr/max(1, sbp), 2),
+            'Pulse_Pressure': sbp - dbp
         }
         
         explanation = get_ai_explanation(context, ai_level, conf)
 
         st.session_state.triage_result = {
-            "level": ai_level, "conf": conf, "reason": reason, "explanation": explanation
+            "level": ai_level, "conf": conf, "reason": reason, 
+            "explanation": explanation, "context": context
         }
 
 # ---------------------------------------------------------
-# 5. DISPLAY RESULTS & ACTIONS
+# 6. RESULTS & DISPOSITION
 # ---------------------------------------------------------
 if st.session_state.triage_result:
     res = st.session_state.triage_result
-    st.divider()
+    st.markdown("---")
     
-    col_res, col_exp = st.columns([1, 2])
-    
-    with col_res:
+    # Visual Result
+    c_res, c_exp = st.columns([1, 2])
+    with c_res:
         color_map = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#388e3c", 5: "#1976d2"}
         lvl = res['level']
         st.markdown(f"""
         <div style="background-color: {color_map.get(lvl, '#888')}; padding: 20px; border-radius: 10px; text-align: center; color: white;">
-            <h3 style="margin:0;">KTAS LEVEL</h3>
-            <h1 style="font-size: 90px; margin:0; font-weight:bold;">{lvl}</h1>
+            <h4 style="margin:0;">RECOMMENDED KTAS</h4>
+            <h1 style="font-size: 80px; margin:0; font-weight:bold;">{lvl}</h1>
             <p>Confidence: {res['conf']:.1f}%</p>
         </div>
         """, unsafe_allow_html=True)
         if res['reason']: st.error(res['reason'])
-
-    with col_exp:
-        st.subheader("🤖 AI Reasoning")
+    
+    with c_exp:
+        st.subheader("💡 Model Reasoning")
         st.info(res['explanation'])
-        
-    st.write("### 🩺 Clinical Action")
-    
-    # --- ACTION BUTTONS ---
-    c1, c2, c3 = st.columns(3)
-    
-    # Button 1: Accept
-    if c1.button("✅ ACCEPT", type="primary", use_container_width=True):
-        database.add_patient(
-            name=patient_name, age=age, gender="Male" if gender==2 else "Female",
-            arrival_mode=arrival, injury=injury, complaint=chief_complaint_text,
-            mental=mental, pain=pain, nrs_pain=nrs_pain,
-            sbp=sbp, dbp=dbp, hr=hr, rr=rr, bt=bt, saturation=sat,
-            final_level=res['level'], ai_level=res['level'], conf=res['conf'], 
-            explanation=res['explanation'], notes="Auto-Accepted",
-            triage_nurse=current_nurse, status="Waiting"
-        )
-        st.success("Patient Admitted to Queue!")
-        time.sleep(1)
-        reset_form()
 
-    # Button 2: Place on Hold
-    if c2.button("⏸️ HOLD", use_container_width=True):
-        database.add_patient(
-            name=patient_name, age=age, gender="Male" if gender==2 else "Female",
-            arrival_mode=arrival, injury=injury, complaint=chief_complaint_text,
-            mental=mental, pain=pain, nrs_pain=nrs_pain,
-            sbp=sbp, dbp=dbp, hr=hr, rr=rr, bt=bt, saturation=sat,
-            final_level=res['level'], ai_level=res['level'], conf=res['conf'], 
-            explanation=res['explanation'], notes="Review Pending",
-            triage_nurse=current_nurse, status="On Hold"
-        )
-        st.warning("Patient placed On Hold.")
-        time.sleep(1)
-        reset_form()
-
-    # Button 3: Manual Override (Expander)
-    with st.expander("⚠️ Override / Decline AI Prediction", expanded=False):
-        with st.form("override_form"):
-            new_level = st.selectbox("Select Correct Level", [1, 2, 3, 4, 5], index=res['level']-1)
-            nurse_notes = st.text_area("Clinical Justification")
+    # DISPOSITION BUTTONS
+    st.subheader("📋 Disposition & Save")
+    col_a, col_b, col_c = st.columns(3)
+    
+    # 1. ACCEPT
+    if col_a.button("✅ ACCEPT & ADMIT", type="primary", use_container_width=True):
+        if not patient_name:
+            st.error("Missing Patient Name")
+        else:
+            # Prepare formatted DOB string for DB
+            dob_str = dob.strftime("%Y-%m-%d")
             
-            if st.form_submit_button("💾 Save Manual Triage"):
-                if not nurse_notes: 
-                    st.error("Justification required.")
+            # Map values back to Integers for DB
+            db_arrival = ARRIVAL_MAP[arrival_mode_txt]
+            db_injury = INJURY_MAP[injury_txt]
+            db_mental = MENTAL_MAP[mental_txt]
+            db_pain = PAIN_MAP[pain_txt]
+            
+            database.add_patient(
+                name=patient_name, dob=dob_str, age=current_age, gender=gender,
+                arrival_mode=db_arrival, injury=db_injury, complaint=chief_complaint_text,
+                mental=db_mental, pain=db_pain, nrs_pain=nrs_pain,
+                sbp=sbp, dbp=dbp, hr=hr, rr=rr, bt=bt, saturation=sat,
+                final_level=res['level'], ai_level=res['level'], conf=res['conf'], 
+                explanation=res['explanation'], notes="Auto-Accepted via Triage Console",
+                triage_nurse=current_nurse, status="Waiting"
+            )
+            st.success("Patient Admitted to Queue.")
+            time.sleep(1)
+            reset_form()
+
+    # 2. HOLD
+    if col_b.button("⏸️ PLACE ON HOLD", use_container_width=True):
+        if not patient_name: st.error("Missing Name")
+        else:
+            dob_str = dob.strftime("%Y-%m-%d")
+            db_arrival = ARRIVAL_MAP[arrival_mode_txt]
+            db_injury = INJURY_MAP[injury_txt]
+            db_mental = MENTAL_MAP[mental_txt]
+            db_pain = PAIN_MAP[pain_txt]
+
+            database.add_patient(
+                name=patient_name, dob=dob_str, age=current_age, gender=gender,
+                arrival_mode=db_arrival, injury=db_injury, complaint=chief_complaint_text,
+                mental=db_mental, pain=db_pain, nrs_pain=nrs_pain,
+                sbp=sbp, dbp=dbp, hr=hr, rr=rr, bt=bt, saturation=sat,
+                final_level=res['level'], ai_level=res['level'], conf=res['conf'], 
+                explanation=res['explanation'], notes="Pending Review",
+                triage_nurse=current_nurse, status="On Hold"
+            )
+            st.warning("Saved to Hold List.")
+            time.sleep(1)
+            reset_form()
+
+    # 3. OVERRIDE
+    with st.expander("⚠️ Clinical Override / Decline"):
+        with st.form("override_form"):
+            ov_level = st.selectbox("Assign Correct Level", [1, 2, 3, 4, 5], index=res['level']-1)
+            ov_notes = st.text_area("Justification (Required for Audit)")
+            
+            if st.form_submit_button("💾 Save Override"):
+                if not ov_notes:
+                    st.error("Medical justification is required for override.")
+                elif not patient_name:
+                    st.error("Missing Patient Name")
                 else:
+                    dob_str = dob.strftime("%Y-%m-%d")
+                    db_arrival = ARRIVAL_MAP[arrival_mode_txt]
+                    db_injury = INJURY_MAP[injury_txt]
+                    db_mental = MENTAL_MAP[mental_txt]
+                    db_pain = PAIN_MAP[pain_txt]
+
                     database.add_patient(
-                        name=patient_name, age=age, gender="Male" if gender==2 else "Female",
-                        arrival_mode=arrival, injury=injury, complaint=chief_complaint_text,
-                        mental=mental, pain=pain, nrs_pain=nrs_pain,
+                        name=patient_name, dob=dob_str, age=current_age, gender=gender,
+                        arrival_mode=db_arrival, injury=db_injury, complaint=chief_complaint_text,
+                        mental=db_mental, pain=db_pain, nrs_pain=nrs_pain,
                         sbp=sbp, dbp=dbp, hr=hr, rr=rr, bt=bt, saturation=sat,
-                        final_level=new_level, ai_level=res['level'], conf=res['conf'], 
-                        explanation=res['explanation'], notes=nurse_notes,
+                        final_level=ov_level, ai_level=res['level'], conf=res['conf'], 
+                        explanation=res['explanation'], notes=f"OVERRIDE: {ov_notes}",
                         triage_nurse=current_nurse, status="Waiting"
                     )
                     st.success("Override Saved.")

@@ -1,4 +1,3 @@
-# pages/1_Dashboard.py
 import streamlit as st
 import database
 import pandas as pd
@@ -30,12 +29,22 @@ with col_refresh:
 # A. Get Patients
 df_patients = database.get_all_patients()
 active_patients = df_patients[df_patients['status'] != 'Discharged'].copy()
+
+# --- FIX: STALE DATA CLEANER ---
+# If the browser remembers a patient ID that no longer exists in the DB (e.g., after DB reset), clear it.
+if 'selected_patient_id' in st.session_state and st.session_state.selected_patient_id is not None:
+    valid_ids = active_patients['id'].tolist()
+    if st.session_state.selected_patient_id not in valid_ids:
+        st.toast("⚠️ Data was reset. Clearing selection.")
+        st.session_state.selected_patient_id = None
+        st.rerun()
+# -------------------------------
+
 waiting_patients = active_patients[active_patients['status'] == 'Waiting']
 
 # B. Get Staff Lists
-md_list = [""] + database.get_staff_by_role("doctor") # Updated to match DB role 'doctor'
-# Note: If you don't have distinct NP/PA roles in DB yet, we just handle what exists
-nppa_list = [""] # Placeholder if not in DB yet
+md_list = [""] + database.get_staff_by_role("doctor")
+nppa_list = [""] + database.get_staff_by_role("nppa")
 nurse_list = [""] + database.get_staff_by_role("nurse")
 
 # C. Get Real-Time Bed Data
@@ -57,7 +66,6 @@ est_wait = int((len(waiting_patients) * 15) / doc_count)
 # ---------------------------------------------------------
 st.markdown("### 📊 Real-Time Metrics")
 
-# Custom CSS for cards
 st.markdown("""
 <style>
     div[data-testid="metric-container"] {
@@ -72,17 +80,10 @@ st.markdown("""
 
 m1, m2, m3, m4, m5 = st.columns(5)
 
-# Metric 1: Active Patients
 m1.metric("Active Patients", len(active_patients), "Current Load")
-
-# Metric 2: Waiting Room
 m2.metric("Waiting Room", len(waiting_patients), "Needs Triage", delta_color="inverse")
-
-# Metric 3: Wait Time
 m3.metric("Est. Wait Time", f"{est_wait} min", "Avg per patient")
 
-# Metric 4: BEDS (The Logic You Requested)
-# We prioritize ER. If ER beds are low (< 3), we show red.
 bed_delta_color = "normal" if er_beds_free > 3 else "inverse"
 m4.metric(
     label="🚨 ER Beds Free", 
@@ -91,7 +92,6 @@ m4.metric(
     delta_color=bed_delta_color 
 )
 
-# Metric 5: Staff
 m5.metric("Staff On-Duty", len(md_list) + len(nurse_list) - 2, "MDs + Nurses")
 
 st.markdown("---")
@@ -104,15 +104,24 @@ st.subheader(f"📋 Patient Queue ({len(waiting_patients)} Waiting)")
 selected_patient_id = None
 
 if not active_patients.empty:
-    # We display a cleaner version of the table
-    display_df = active_patients[['id', 'arrival_time', 'name', 'triage_level', 'status', 'assigned_md', 'assigned_nurse']]
-    
+    # --- NAME ALERT LOGIC ---
+    name_counts = active_patients['name'].value_counts()
+    duplicates = name_counts[name_counts > 1].index.tolist()
+
+    def flag_name(row):
+        name = row['name']
+        if name in duplicates: return f"🚨 {name} (NAME ALERT)"
+        return name
+
+    display_df = active_patients[['id', 'arrival_time', 'name', 'triage_level', 'status', 'assigned_md', 'assigned_nurse']].copy()
+    display_df['name'] = display_df.apply(flag_name, axis=1)
+
     event = st.dataframe(
         display_df,
         column_config={
             "id": st.column_config.NumberColumn("ID", width="small"),
             "arrival_time": st.column_config.DatetimeColumn("Arrival", format="h:mm a"),
-            "name": st.column_config.TextColumn("Patient Name"),
+            "name": st.column_config.TextColumn("Patient Name", help="🚨 indicates duplicate names."),
             "triage_level": st.column_config.NumberColumn("KTAS", width="small"),
             "status": st.column_config.SelectboxColumn("Status", options=["Waiting", "In-Treatment", "Admitted"]),
             "assigned_md": st.column_config.SelectboxColumn("ED MD", options=md_list),
@@ -133,67 +142,82 @@ else:
     st.info("✅ No active patients in the system.")
 
 # ---------------------------------------------------------
-# DIALOG FUNCTION (The Popup Window)
+# DIALOGS (Popups)
 # ---------------------------------------------------------
+
+# A. TREATMENT POPUP
 @st.dialog("🏥 Initiate Treatment Protocol")
 def show_treatment_popup(patient_id, current_name):
     st.write(f"Assigning Care Team for **{current_name}**")
     
-    # 1. Fetch Dropdown Options
     md_opts = [""] + database.get_staff_by_role("doctor")
     nppa_opts = [""] + database.get_staff_by_role("nppa")
     nurse_opts = [""] + database.get_staff_by_role("nurse")
     
-    # Bed Options: Format as "ER-01 (Emergency)"
     beds_df = database.get_available_beds_list()
     bed_map = {f"{row['bed_label']} ({row['department']})": row['id'] for i, row in beds_df.iterrows()}
     bed_options = ["No Bed Assignment"] + list(bed_map.keys())
 
-    # 2. Form Inputs
     with st.form("treatment_form"):
         col1, col2 = st.columns(2)
-        
         with col1:
             st.markdown("**👨‍⚕️ Care Team**")
             sel_md = st.selectbox("Attending Physician (MD)", md_opts)
             sel_nppa = st.selectbox("Mid-Level (NP/PA)", nppa_opts)
             sel_nurse = st.selectbox("Primary Nurse", nurse_opts)
-            
         with col2:
             st.markdown("**📍 Location & Time**")
-            # If patient already has a bed, logic could be added to show it. 
-            # For now, we show available beds to room them.
             sel_bed_label = st.selectbox("Assign Room/Bed", bed_options)
-            
-            # Time Recording
             start_time = st.time_input("Provider Start Time", value="now")
             
         initial_note = st.text_area("Initial Provider Note", placeholder="e.g. Patient seen, assessment started...")
         
-        # 3. Submit
         if st.form_submit_button("✅ Confirm & Start", type="primary"):
-            # Determine Bed ID
             selected_bed_id = bed_map.get(sel_bed_label) if sel_bed_label != "No Bed Assignment" else None
-            
-            # Save to DB
             success = database.start_treatment_detailed(
-                patient_id=patient_id,
-                md=sel_md,
-                nppa=sel_nppa,
-                nurse=sel_nurse,
-                bed_id=selected_bed_id,
-                notes=f" (Started at {start_time}) - {initial_note}"
+                patient_id=patient_id, md=sel_md, nppa=sel_nppa, nurse=sel_nurse,
+                bed_id=selected_bed_id, notes=f" (Started at {start_time}) - {initial_note}"
             )
-            
             if success:
                 st.toast("Treatment Protocol Initiated!", icon="👨‍⚕️")
                 time.sleep(1)
+                st.cache_data.clear() 
                 st.rerun()
             else:
                 st.error("Database Error.")
 
+# B. TRANSFER / CHANGE ROOM POPUP (NEW)
+@st.dialog("⇄ Transfer Patient / Change Room")
+def show_transfer_popup(patient_id, current_name, current_loc):
+    st.write(f"Transferring **{current_name}**")
+    st.info(f"📍 Current Location: **{current_loc}**")
+    
+    # Available Beds
+    beds_df = database.get_available_beds_list()
+    bed_map = {f"{row['bed_label']} ({row['department']})": row['id'] for i, row in beds_df.iterrows()}
+    
+    with st.form("transfer_form"):
+        new_bed_label = st.selectbox("Select New Destination", list(bed_map.keys()))
+        reason = st.text_input("Reason for Transfer", placeholder="e.g. Isolation required, Upgrade to ICU...")
+        
+        if st.form_submit_button("⇄ Confirm Transfer"):
+            new_bed_id = bed_map[new_bed_label]
+            success = database.transfer_patient(patient_id, new_bed_id)
+            
+            if success:
+                # Log the transfer in notes (Optional but good for audit)
+                timestamp = time.strftime("%H:%M")
+                log = f"\n[{timestamp}] Transfer: {current_loc} -> {new_bed_label}. Reason: {reason}"
+                # You could call update_full_patient_record here to append note if desired
+                
+                st.success(f"Patient moved to {new_bed_label}")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Transfer Failed.")
+
 # ---------------------------------------------------------
-# 4. ACTION BAR (Updated Logic)
+# 4. ACTION BAR (Updated)
 # ---------------------------------------------------------
 st.markdown("---")
 
@@ -206,33 +230,45 @@ if selected_patient_id:
         p_name = p_row['name']
         p_status = p_row['status']
         
-        st.markdown(f"### ⚙️ Actions for: **{p_name}** (Status: {p_status})")
+        # FEATURE: DISPLAY CURRENT ROOM
+        current_bed = database.get_patient_bed(selected_patient_id)
         
-        col_a, col_b, col_c = st.columns(3)
+        st.markdown(f"### ⚙️ Patient: **{p_name}**")
         
-        # 1. OPEN CHART
+        # Info Bar
+        c_info1, c_info2 = st.columns([1, 4])
+        c_info1.info(f"📍 **{current_bed}**")
+        c_info2.caption(f"Status: {p_status} | MRN: {selected_patient_id}")
+        
+        col_a, col_b, col_c, col_d = st.columns(4)
+        
+        # 1. CHART
         with col_a:
-            if st.button("📂 Open Medical Chart", type="primary", use_container_width=True):
+            if st.button("📂 Open Chart", type="primary", use_container_width=True):
                 st.switch_page("pages/4_Patient_Details.py")
 
-        # 2. WORKFLOW (The Popup Trigger)
+        # 2. WORKFLOW (Start/Discharge)
         with col_b:
             if p_status == "Waiting":
-                # BUTTON TRIGGERS THE POPUP
                 if st.button("👨‍⚕️ Start Treatment", use_container_width=True):
                     show_treatment_popup(selected_patient_id, p_name)
-            
             else:
-                # Discharge Logic (Same as before)
-                if st.button("✅ Discharge Patient", use_container_width=True):
+                if st.button("✅ Discharge", use_container_width=True):
                     database.discharge_patient_and_free_bed(selected_patient_id)
-                    st.success(f"{p_name} discharged. Bed marked as 'Cleaning'.")
+                    st.success(f"Discharged. {current_bed} is now Dirty/Cleaning.")
                     time.sleep(1.5)
                     st.rerun()
 
-        # 3. BED MANAGER
+        # 3. TRANSFER (NEW FEATURE)
         with col_c:
-            if st.button("🛏️ Bed Manager", use_container_width=True):
+            # Only enable transfer if they are NOT waiting (i.e., they are in the system)
+            # Or if they are waiting, you could transfer them to a bed directly.
+            if st.button("⇄ Change Room", use_container_width=True, help="Move patient to a different bed"):
+                show_transfer_popup(selected_patient_id, p_name, current_bed)
+
+        # 4. BED MANAGER
+        with col_d:
+            if st.button("🛏️ Bed Grid", use_container_width=True):
                 st.switch_page("pages/9_Bed_Manager.py")
                 
     else:
