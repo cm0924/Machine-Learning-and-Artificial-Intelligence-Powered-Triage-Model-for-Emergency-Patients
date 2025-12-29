@@ -150,9 +150,9 @@ else:
 def show_treatment_popup(patient_id, current_name):
     st.write(f"Assigning Care Team for **{current_name}**")
     
-    md_opts = [""] + database.get_staff_by_role("doctor")
-    nppa_opts = [""] + database.get_staff_by_role("nppa")
-    nurse_opts = [""] + database.get_staff_by_role("nurse")
+    md_opts = [""] + database.get_available_staff("doctor")
+    nppa_opts = [""] + database.get_available_staff("nppa")
+    nurse_opts = [""] + database.get_available_staff("nurse")
     
     beds_df = database.get_available_beds_list()
     bed_map = {f"{row['bed_label']} ({row['department']})": row['id'] for i, row in beds_df.iterrows()}

@@ -154,9 +154,10 @@ if not patient:
 
 bed_loc = database.get_patient_bed(pid)
 
-md_list = [""] + database.get_staff_by_role("doctor")
-nppa_list = [""] + database.get_staff_by_role("nppa")
-nurse_list = [""] + database.get_staff_by_role("nurse")
+# NEW CODE: Uses the filtered list
+md_opts = [""] + database.get_available_staff("doctor")
+nppa_opts = [""] + database.get_available_staff("nppa")
+nurse_opts = [""] + database.get_available_staff("nurse")
 
 def get_index(options, value):
     try: return options.index(value)

@@ -428,7 +428,50 @@ def discharge_patient_and_free_bed(patient_id):
     conn.commit()
     conn.close()
 
+def get_available_staff(role):
+    """
+    Returns a list of staff members who are NOT currently assigned 
+    to any active patient.
     
+    Logic: Total Staff - Staff assigned to Active Patients = Available Staff
+    """
+    conn = sqlite3.connect(DB_NAME)
+    
+    # 1. Get ALL staff for this role
+    # We use 'set' for faster mathematical subtraction
+    df_all = pd.read_sql("SELECT full_name FROM users WHERE role = ?", conn, params=(role,))
+    all_staff = set(df_all['full_name'].dropna().tolist())
+    
+    # 2. Get BUSY staff
+    # We look at patients who are NOT discharged.
+    column_map = {
+        "doctor": "assigned_md",
+        "nurse": "assigned_nurse",
+        "nppa":   "assigned_nppa"
+    }
+    
+    target_col = column_map.get(role)
+    busy_staff = set()
+
+    if target_col:
+        # Query: Find names in the assigned column where status is NOT Discharged
+        query = f"""
+            SELECT DISTINCT {target_col} 
+            FROM patients 
+            WHERE status != 'Discharged' 
+            AND {target_col} IS NOT NULL 
+            AND {target_col} != ''
+        """
+        df_busy = pd.read_sql(query, conn)
+        busy_staff = set(df_busy[target_col].dropna().tolist())
+        
+    conn.close()
+    
+    # 3. Subtract Busy from All
+    available_staff = list(all_staff - busy_staff)
+    available_staff.sort()
+    
+    return available_staff
 
 # Initialize on run
 init_db()
