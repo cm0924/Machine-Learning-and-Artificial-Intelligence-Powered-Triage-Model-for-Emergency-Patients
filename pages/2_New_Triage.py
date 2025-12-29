@@ -124,8 +124,8 @@ def get_ai_explanation(context, triage_level, confidence):
     - SpO2: {context['Saturation']}%
     
     Derived Markers:
-    - Shock Index: {context['Shock_Index']} (Normal < 0.7)
-    - Pulse Pressure: {context['Pulse_Pressure']} (Normal 30-50)
+    - Shock Index: {context['Shock_Index']} (Normal 0.5-0.7)
+    - Pulse Pressure: {context['Pulse_Pressure']} (Normal 40-60)
     
     AI Model Prediction: KTAS Level {triage_level} ({confidence:.1f}% confidence)
     
