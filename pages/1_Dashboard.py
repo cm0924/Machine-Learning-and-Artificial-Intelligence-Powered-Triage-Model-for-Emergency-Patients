@@ -133,42 +133,110 @@ else:
     st.info("✅ No active patients in the system.")
 
 # ---------------------------------------------------------
-# 4. ACTION BAR
+# DIALOG FUNCTION (The Popup Window)
+# ---------------------------------------------------------
+@st.dialog("🏥 Initiate Treatment Protocol")
+def show_treatment_popup(patient_id, current_name):
+    st.write(f"Assigning Care Team for **{current_name}**")
+    
+    # 1. Fetch Dropdown Options
+    md_opts = [""] + database.get_staff_by_role("doctor")
+    nppa_opts = [""] + database.get_staff_by_role("nppa")
+    nurse_opts = [""] + database.get_staff_by_role("nurse")
+    
+    # Bed Options: Format as "ER-01 (Emergency)"
+    beds_df = database.get_available_beds_list()
+    bed_map = {f"{row['bed_label']} ({row['department']})": row['id'] for i, row in beds_df.iterrows()}
+    bed_options = ["No Bed Assignment"] + list(bed_map.keys())
+
+    # 2. Form Inputs
+    with st.form("treatment_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**👨‍⚕️ Care Team**")
+            sel_md = st.selectbox("Attending Physician (MD)", md_opts)
+            sel_nppa = st.selectbox("Mid-Level (NP/PA)", nppa_opts)
+            sel_nurse = st.selectbox("Primary Nurse", nurse_opts)
+            
+        with col2:
+            st.markdown("**📍 Location & Time**")
+            # If patient already has a bed, logic could be added to show it. 
+            # For now, we show available beds to room them.
+            sel_bed_label = st.selectbox("Assign Room/Bed", bed_options)
+            
+            # Time Recording
+            start_time = st.time_input("Provider Start Time", value="now")
+            
+        initial_note = st.text_area("Initial Provider Note", placeholder="e.g. Patient seen, assessment started...")
+        
+        # 3. Submit
+        if st.form_submit_button("✅ Confirm & Start", type="primary"):
+            # Determine Bed ID
+            selected_bed_id = bed_map.get(sel_bed_label) if sel_bed_label != "No Bed Assignment" else None
+            
+            # Save to DB
+            success = database.start_treatment_detailed(
+                patient_id=patient_id,
+                md=sel_md,
+                nppa=sel_nppa,
+                nurse=sel_nurse,
+                bed_id=selected_bed_id,
+                notes=f" (Started at {start_time}) - {initial_note}"
+            )
+            
+            if success:
+                st.toast("Treatment Protocol Initiated!", icon="👨‍⚕️")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Database Error.")
+
+# ---------------------------------------------------------
+# 4. ACTION BAR (Updated Logic)
 # ---------------------------------------------------------
 st.markdown("---")
 
 if selected_patient_id:
-    # Fetch specific patient name safely
-    p_data = active_patients[active_patients['id'] == selected_patient_id]
+    # Fetch latest data
+    p_data = df_patients[df_patients['id'] == selected_patient_id]
+    
     if not p_data.empty:
-        p_name = p_data.iloc[0]['name']
+        p_row = p_data.iloc[0]
+        p_name = p_row['name']
+        p_status = p_row['status']
         
-        st.markdown(f"### ⚙️ Actions for: **{p_name}** (ID: {selected_patient_id})")
+        st.markdown(f"### ⚙️ Actions for: **{p_name}** (Status: {p_status})")
         
         col_a, col_b, col_c = st.columns(3)
         
-        # 1. VIEW CHART
+        # 1. OPEN CHART
         with col_a:
             if st.button("📂 Open Medical Chart", type="primary", use_container_width=True):
-                # Note: Ensure you have pages/4_Patient_Details.py created or change this link
-                st.switch_page("pages/5_Patient_Details.py") 
-                
-        # 2. DISCHARGE
+                st.switch_page("pages/4_Patient_Details.py")
+
+        # 2. WORKFLOW (The Popup Trigger)
         with col_b:
-            if st.button("✅ Treat & Discharge", use_container_width=True):
-                database.discharge_patient(selected_patient_id)
-                # Also free up the bed if they had one (Optional logic, but good for data integrity)
-                # For now, simplistic discharge:
-                st.toast(f"{p_name} discharged!", icon="👋")
-                time.sleep(1)
-                st.rerun()
-                
-        # 3. ASSIGN BED LINK
+            if p_status == "Waiting":
+                # BUTTON TRIGGERS THE POPUP
+                if st.button("👨‍⚕️ Start Treatment", use_container_width=True):
+                    show_treatment_popup(selected_patient_id, p_name)
+            
+            else:
+                # Discharge Logic (Same as before)
+                if st.button("✅ Discharge Patient", use_container_width=True):
+                    database.discharge_patient_and_free_bed(selected_patient_id)
+                    st.success(f"{p_name} discharged. Bed marked as 'Cleaning'.")
+                    time.sleep(1.5)
+                    st.rerun()
+
+        # 3. BED MANAGER
         with col_c:
-            if st.button("🛏️ Go to Bed Manager", use_container_width=True):
-                st.switch_page("pages/4_Bed_Manager.py")
+            if st.button("🛏️ Bed Manager", use_container_width=True):
+                st.switch_page("pages/9_Bed_Manager.py")
+                
     else:
-        st.error("Selected patient no longer active.")
+        st.error("Patient data not found. Please refresh.")
 else:
     st.caption("👆 **Select a patient** from the list above to view actions.")
     

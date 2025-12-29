@@ -81,7 +81,10 @@ def init_db():
             ("Sarah Connor", "sarah", "pass123", "nurse"),
             ("Dr. Gregory House", "dr_house", "vicodin", "doctor"),
             ("Dr. Meredith Grey", "dr_grey", "derrick", "doctor"),
-            ("Dr. Stephen Strange", "dr_strange", "time", "doctor")
+            ("Dr. Stephen Strange", "dr_strange", "time", "doctor"),
+            # --- NEW NP/PA STAFF ---
+            ("Peter Parker, PA-C", "peter", "web123", "nppa"), 
+            ("Carol Danvers, NP", "carol", "hero123", "nppa")
         ]
         
         for name, user, pwd, role in staff_members:
@@ -312,7 +315,71 @@ def set_bed_status(bed_id, status):
     c = conn.cursor()
     c.execute("UPDATE beds SET status=? WHERE id=?", (status, bed_id))
     conn.commit()
-    conn.close()        
+    conn.close()
+
+def get_patient_history(name):
+    """Fetches all past visits for a patient by matching their name."""
+    conn = sqlite3.connect(DB_NAME)
+    try:
+        df = pd.read_sql("SELECT * FROM patients WHERE name = ? ORDER BY arrival_time DESC", conn, params=(name,))
+    except Exception as e:
+        print(f"Error fetching history: {e}")
+        df = pd.DataFrame() # Return empty if error
+    finally:
+        conn.close()
+    return df
+
+def start_treatment_detailed(patient_id, md, nppa, nurse, bed_id, notes):
+    """
+    Updates patient status to In-Treatment, assigns the care team, 
+    and handles bed assignment if a bed is selected.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    try:
+        # 1. Update Patient Record (Team + Status)
+        c.execute('''
+            UPDATE patients 
+            SET status='In-Treatment', 
+                assigned_md=?, 
+                assigned_nppa=?, 
+                assigned_nurse=?, 
+                nurse_notes = nurse_notes || ?
+            WHERE id=?
+        ''', (md, nppa, nurse, f"\n[Treatment Started]: {notes}", patient_id))
+        
+        # 2. Handle Bed Assignment (If a bed was selected)
+        if bed_id:
+            # First, check if patient already has a DIFFERENT bed, if so, free it? 
+            # (Skipping complex swap logic for simplicity, assuming they move to empty bed)
+            
+            # Mark Bed as Occupied
+            c.execute("UPDATE beds SET status='Occupied', current_patient_id=? WHERE id=?", (patient_id, bed_id))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error starting treatment: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_available_beds_list():
+    """Returns a list of beds that are Available (for the dropdown)."""
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql("SELECT id, bed_label, department FROM beds WHERE status='Available'", conn)
+    conn.close()
+    return df
+
+def get_patient_bed(patient_id):
+    """Returns the bed label (e.g., 'ER-01') if patient is assigned to one."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT bed_label FROM beds WHERE current_patient_id=?", (patient_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else "Waiting Room"            
 
 # Initialize on run
 init_db()
