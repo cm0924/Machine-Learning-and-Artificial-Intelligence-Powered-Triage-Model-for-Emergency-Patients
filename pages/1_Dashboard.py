@@ -202,14 +202,11 @@ def show_transfer_popup(patient_id, current_name, current_loc):
         
         if st.form_submit_button("⇄ Confirm Transfer"):
             new_bed_id = bed_map[new_bed_label]
-            success = database.transfer_patient(patient_id, new_bed_id)
+            
+            # PASS THE REASON HERE
+            success = database.transfer_patient(patient_id, new_bed_id, reason) 
             
             if success:
-                # Log the transfer in notes (Optional but good for audit)
-                timestamp = time.strftime("%H:%M")
-                log = f"\n[{timestamp}] Transfer: {current_loc} -> {new_bed_label}. Reason: {reason}"
-                # You could call update_full_patient_record here to append note if desired
-                
                 st.success(f"Patient moved to {new_bed_label}")
                 time.sleep(1)
                 st.rerun()

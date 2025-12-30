@@ -105,6 +105,32 @@ def create_pdf(patient, bed_label):
     
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
+@st.dialog("⇄ Transfer / Change Room")
+def show_transfer_dialog_ehr(patient_id, current_bed_label):
+    st.write(f"Current Location: **{current_bed_label}**")
+    
+    # Get available beds
+    beds_df = database.get_available_beds_list()
+    # Create a map: "ICU-01 (ICU)" -> ID 5
+    bed_map = {f"{row['bed_label']} ({row['department']})": row['id'] for i, row in beds_df.iterrows()}
+    
+    with st.form("transfer_form_ehr"):
+        new_bed_label = st.selectbox("Select Destination", list(bed_map.keys()))
+        reason = st.text_input("Reason for Transfer", placeholder="e.g. ICU Upgrade, Isolation, Patient Request")
+        
+        if st.form_submit_button("Confirm Transfer"):
+            if not reason:
+                st.error("Please enter a reason.")
+            else:
+                new_bed_id = bed_map[new_bed_label]
+                success = database.transfer_patient(patient_id, new_bed_id, reason)
+                if success:
+                    st.success("Transfer Complete!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Transfer Failed.")
+
 # ---------------------------------------------------------
 # AI HELPERS
 # ---------------------------------------------------------
@@ -561,28 +587,35 @@ with t4:
         st.warning("No records found in database.")
 
 # ---------------------------------------------------------
-# FOOTER ACTIONS
+# FOOTER ACTIONS (Updated)
 # ---------------------------------------------------------
 st.markdown("---")
-ac1, ac2, ac3 = st.columns([1, 1, 1])
+# Change columns from 3 to 4 to fit the new button
+ac1, ac2, ac3, ac4 = st.columns([1, 1, 1, 1])
 
 with ac1:
-    if st.button("⬅️ Back to Dashboard", use_container_width=True):
+    if st.button("⬅️ Dashboard", use_container_width=True):
         st.switch_page("pages/1_Dashboard.py")
 
 with ac2:
+    # PDF Logic (Keep existing)
     pdf_bytes = create_pdf(patient, bed_loc)
     b64 = base64.b64encode(pdf_bytes).decode('latin-1')
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="Medical_Record_{pid}.pdf" style="text-decoration:none; width:100%; display:inline-block; text-align:center; background-color:#555; color:white; padding:10px; border-radius:5px;">📄 Download PDF Chart</a>'
+    href = f'<a href="data:application/octet-stream;base64,{b64}" download="Medical_Record_{pid}.pdf" style="text-decoration:none; width:100%; display:inline-block; text-align:center; background-color:#555; color:white; padding:10px; border-radius:5px;">📄 Download PDF</a>'
     st.markdown(href, unsafe_allow_html=True)
 
 with ac3:
+    # NEW TRANSFER BUTTON
+    if st.button("⇄ Transfer", use_container_width=True, help="Change Bed Location"):
+        show_transfer_dialog_ehr(pid, bed_loc)
+
+with ac4:
+    # Discharge Logic (Keep existing)
     if patient['status'] != "Discharged":
-        if st.button("✅ Discharge Patient", type="primary", use_container_width=True):
-            try: database.discharge_patient_and_free_bed(pid)
-            except: database.discharge_patient(pid)
-            st.success("Patient Discharged.")
+        if st.button("✅ Discharge", type="primary", use_container_width=True):
+            database.discharge_patient_and_free_bed(pid)
+            st.success("Discharged.")
             time.sleep(1)
             st.switch_page("pages/1_Dashboard.py")
     else:
-        st.info("Patient already discharged.")
+        st.info("Discharged")

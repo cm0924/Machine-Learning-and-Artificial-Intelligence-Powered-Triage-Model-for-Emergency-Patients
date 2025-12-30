@@ -465,29 +465,44 @@ def get_available_staff(role):
 # ADD THESE FUNCTIONS TO database.py
 # ---------------------------------------------------------
 
-def transfer_patient(patient_id, new_bed_id):
+# In database.py
+
+def transfer_patient(patient_id, new_bed_id, reason="Clinical Update"):
     """
-    Moves a patient from their current bed to a new bed.
+    Moves patient to new bed AND logs the event in the clinical notes.
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     try:
-        # FIX: Force Integer Cast
         pid = int(patient_id)
         
-        # 1. Find the Old Bed (if exists) and mark it Dirty
-        c.execute("SELECT id FROM beds WHERE current_patient_id = ?", (pid,))
+        # 1. Get Old Bed Info (For the log)
+        c.execute("SELECT bed_label FROM beds WHERE current_patient_id = ?", (pid,))
         row = c.fetchone()
+        old_bed_label = row[0] if row else "Waiting Room"
         
-        if row:
-            old_bed_id = row[0]
-            c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE id=?", (old_bed_id,))
+        # 2. Get New Bed Info
+        c.execute("SELECT bed_label FROM beds WHERE id = ?", (new_bed_id,))
+        row_new = c.fetchone()
+        new_bed_label = row_new[0] if row_new else "Unknown"
+
+        # 3. Mark Old Bed Dirty
+        c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE current_patient_id=?", (pid,))
         
-        # 2. Occupy the New Bed
+        # 4. Occupy New Bed
         c.execute("UPDATE beds SET status='Occupied', current_patient_id=? WHERE id=?", (pid, new_bed_id))
         
-        # 3. Ensure Patient Status is correct
-        c.execute("UPDATE patients SET status='In-Treatment' WHERE id=?", (pid,))
+        # 5. Update Patient Status & LOG THE REASON
+        # We use COALESCE to append safely to existing notes
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        log_entry = f"\n\n[{timestamp}] ⚠️ TRANSFER: {old_bed_label} -> {new_bed_label}\nReason: {reason}"
+        
+        c.execute("""
+            UPDATE patients 
+            SET status='In-Treatment', 
+                nurse_notes = COALESCE(nurse_notes, '') || ? 
+            WHERE id=?
+        """, (log_entry, pid))
 
         conn.commit()
         return True
