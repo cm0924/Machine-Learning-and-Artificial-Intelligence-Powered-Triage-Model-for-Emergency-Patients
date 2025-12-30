@@ -580,7 +580,66 @@ def discharge_patient_and_free_bed(patient_id):
         print(f"Error during discharge: {e}")
         return False
     finally:
-        conn.close()    
+        conn.close()
+
+def get_staff_status_report():
+    """
+    Returns staff status, location, AND total patient count (workload).
+    """
+    conn = sqlite3.connect(DB_NAME)
+    
+    # 1. Get All Staff
+    staff_df = pd.read_sql("SELECT full_name, role, username FROM users", conn)
+    
+    # 2. Get All Patients (Active & Discharged) for Workload Stats
+    # We count how many times a name appears in the assigned columns
+    p_df = pd.read_sql("SELECT assigned_md, assigned_nppa, assigned_nurse, status, name, id FROM patients", conn)
+    
+    # 3. Get Active Bed Mapping (For Location)
+    # Join beds to find active patient locations
+    b_df = pd.read_sql("SELECT current_patient_id, bed_label FROM beds WHERE current_patient_id IS NOT NULL", conn)
+    
+    conn.close()
+    
+    # --- PROCESSING LOGIC ---
+    status_map = {}
+    location_map = {}
+    workload_map = {}
+    
+    # A. Calculate Workload (Count total assignments)
+    # We concat all staff columns to count occurrences easily
+    all_assignments = pd.concat([p_df['assigned_md'], p_df['assigned_nppa'], p_df['assigned_nurse']])
+    counts = all_assignments.value_counts().to_dict()
+    
+    # B. Calculate Active Status (Only non-discharged)
+    active_patients = p_df[p_df['status'] != 'Discharged']
+    
+    # Create a map of Patient ID -> Bed Label
+    bed_map = dict(zip(b_df['current_patient_id'], b_df['bed_label']))
+    
+    for idx, row in active_patients.iterrows():
+        # Find Bed
+        pid = row['id']
+        loc_txt = bed_map.get(pid, "Waiting Room")
+        status_txt = f"Busy ({row['name']})"
+        
+        # Assign to map
+        for role_col in ['assigned_md', 'assigned_nppa', 'assigned_nurse']:
+            staff_name = row[role_col]
+            if staff_name:
+                status_map[staff_name] = status_txt
+                location_map[staff_name] = loc_txt
+
+    # C. Apply to Main DataFrame
+    def get_status(name): return status_map.get(name, "Available")
+    def get_location(name): return location_map.get(name, "Staff Lounge")
+    def get_workload(name): return counts.get(name, 0)
+
+    staff_df['Status'] = staff_df['full_name'].apply(get_status)
+    staff_df['Location'] = staff_df['full_name'].apply(get_location)
+    staff_df['Patients Seen'] = staff_df['full_name'].apply(get_workload)
+    
+    return staff_df            
 
 # Initialize on run
 init_db()
