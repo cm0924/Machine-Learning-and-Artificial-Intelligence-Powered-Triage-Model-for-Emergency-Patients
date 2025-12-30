@@ -218,28 +218,47 @@ def show_transfer_popup(patient_id, current_name, current_loc):
 # ---------------------------------------------------------
 st.markdown("---")
 
-# --- CONFIRMATION DIALOG FOR DISCHARGE ---
-@st.dialog("⚠️ Confirm Discharge")
+# --- IMPROVED DISPOSITION DIALOG ---
+@st.dialog("🏥 Clinical Disposition (End Encounter)")
 def confirm_discharge(patient_id, name, bed_label):
-    st.warning(f"Are you sure you want to discharge **{name}**?")
-    st.caption(f"This will free up **{bed_label}** and move it to 'Cleaning'.")
-    st.caption("📝 An AI Clinical Summary will be auto-generated for the history.")
+    st.write(f"Finalizing encounter for **{name}** in **{bed_label}**.")
+    
+    # 1. THE CRITICAL CHOICE
+    # This determines "Who was right" in the Nurse Audit
+    outcome = st.selectbox(
+        "Where is the patient going?",
+        [
+            "Home (Discharge)", 
+            "Admit to Ward (General Medicine)", 
+            "Admit to ICU (Critical Care)", 
+            "Transfer to Other Facility",
+            "Left Without Being Seen (LWBS)"
+        ]
+    )
+    
+    st.info("📝 An AI Clinical Synopsis will be auto-generated based on this outcome.")
     
     col_yes, col_no = st.columns(2)
     with col_yes:
-        if st.button("✅ Yes, Discharge", type="primary", use_container_width=True):
-            with st.spinner("Processing Discharge & Generating Summary..."):
-                # Call the DB function
-                success = database.discharge_patient_and_free_bed(patient_id)
+        if st.button("✅ Finalize & Release Bed", type="primary", use_container_width=True):
+            with st.spinner(f"Processing {outcome}..."):
+                
+                # Map the user friendly string to database short-codes
+                db_disp = "Home"
+                if "Ward" in outcome: db_disp = "Admit"
+                elif "ICU" in outcome: db_disp = "ICU"
+                elif "Transfer" in outcome: db_disp = "Transfer"
+                elif "LWBS" in outcome: db_disp = "LWBS"
+                
+                success = database.discharge_patient_and_free_bed(patient_id, disposition=db_disp)
                 
                 if success:
-                    st.success("Patient Discharged!")
-                    # CRITICAL FIX: Clear the selection so the UI resets
+                    st.success(f"Patient moved to: {db_disp}")
                     st.session_state.selected_patient_id = None
                     time.sleep(1)
                     st.rerun()
                 else:
-                    st.error("Error: Could not discharge. Check console logs.")
+                    st.error("Database Error.")
     
     with col_no:
         if st.button("❌ Cancel", use_container_width=True):

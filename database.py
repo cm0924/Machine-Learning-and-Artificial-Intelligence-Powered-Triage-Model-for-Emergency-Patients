@@ -530,45 +530,45 @@ def generate_illness_script_internal(patient_dict, logs):
     except Exception as e:
         return "Summary unavailable."
 
-def discharge_patient_and_free_bed(patient_id):
+def discharge_patient_and_free_bed(patient_id, disposition="Home"):
     """
-    Discharges patient, frees bed, and auto-generates AI History Summary.
+    Finalizes the ER visit.
+    disposition: 'Home', 'Admit', 'ICU', 'Transfer', 'AMA'
     """
     conn = sqlite3.connect(DB_NAME)
-    # FIX 1: Use Row Factory so we can access columns by name (['name'] instead of [1])
     conn.row_factory = sqlite3.Row 
     c = conn.cursor()
     
     try:
-        # FIX 2: Force Integer Cast to prevent "Not Found" error
         pid = int(patient_id)
         
-        # 1. Fetch the full patient record BEFORE discharging
+        # 1. Fetch data for AI Summary
         c.execute("SELECT * FROM patients WHERE id = ?", (pid,))
         patient_data = c.fetchone()
         
-        if not patient_data:
-            print(f"Error: Patient ID {pid} not found for discharge.")
-            return False
+        if not patient_data: return False
 
-        # Convert Row to Dict for the AI Helper
         p_dict = dict(patient_data)
         
-        # 2. Generate the Clinical Summary
+        # 2. Generate Summary (Pass the disposition to AI so it knows context)
         notes = p_dict.get('nurse_notes', '')
-        summary_text = generate_illness_script_internal(p_dict, notes)
+        # (Optional: Append outcome to notes for AI context)
+        context_notes = f"{notes}\n[Outcome: {disposition}]"
+        summary_text = generate_illness_script_internal(p_dict, context_notes)
         
-        # 3. Update Patient (Set Discharged + Save Summary)
+        # 3. UPDATE: Set Status to 'Discharged' (from ER perspective)
+        # BUT set 'final_disposition' to the specific outcome (Admit/ICU/Home)
         c.execute("""
             UPDATE patients 
-            SET status='Discharged', final_disposition='Home', clinical_summary = ? 
+            SET status='Discharged', 
+                final_disposition=?, 
+                clinical_summary = ? 
             WHERE id=?
-        """, (summary_text, pid))
+        """, (disposition, summary_text, pid))
         
-        # 4. Find Bed & Mark Dirty
+        # 4. Free the Bed
         c.execute("SELECT id FROM beds WHERE current_patient_id=?", (pid,))
         row = c.fetchone()
-        
         if row:
             bed_id = row[0]
             c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE id=?", (bed_id,))
@@ -577,7 +577,7 @@ def discharge_patient_and_free_bed(patient_id):
         return True
 
     except Exception as e:
-        print(f"Error during discharge: {e}")
+        print(f"Error: {e}")
         return False
     finally:
         conn.close()
