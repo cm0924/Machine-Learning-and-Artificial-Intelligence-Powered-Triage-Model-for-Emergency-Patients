@@ -108,6 +108,31 @@ def create_pdf(patient, bed_label):
 # ---------------------------------------------------------
 # AI HELPERS
 # ---------------------------------------------------------
+# In pages/4_Patient_Details.py (AI HELPERS section)
+def generate_illness_script(patient, logs):
+    """Generates a short, high-density summary for the History Table."""
+    prompt = f"""
+    Act as a Senior Resident Doctor. Write a "Clinical Synopsis" (Illness Script) for:
+    Patient: {patient['name']} ({patient['age']} {patient['gender']})
+    Complaint: {patient['complaint']}
+    Acquity: KTAS {patient['triage_level']}
+    Clinical Notes: {logs}
+    
+    Task: Write a single, concise paragraph (max 4 sentences).
+    Include:
+    1. The definitive diagnosis (or leading hypothesis).
+    2. Key interventions (e.g., "Given IV fluids", "Sutured", "CT Negative").
+    3. The outcome.
+    
+    Do NOT use bullet points. Do NOT write a full letter. Just the medical facts.
+    """
+    try:
+        # Make sure 'gemini-3-flash-preview:cloud' is available in your Ollama
+        response = ollama.chat(model='gemini-3-flash-preview:cloud', messages=[{'role': 'user', 'content': prompt}])
+        return response['message']['content']
+    except Exception as e:
+        return f"Summary unavailable. Error: {e}"
+    
 def generate_ai_summary(patient, logs):
     prompt = f"""
     Act as a Medical Doctor. Write a formal Hospital Discharge Summary for:
@@ -284,20 +309,41 @@ with t2:
             st.markdown("#### ✍️ Provider Documentation")
             
             # Row 1: Config & AI
-            # Using vertical_alignment="bottom" ensures button lines up with dropdown
             c_top1, c_top2 = st.columns([2, 1], vertical_alignment="bottom")
             with c_top1:
                 n_type = st.selectbox("Note Type", ["Progress Note", "Nursing Note", "Procedure Note", "Discharge Summary"], key="note_type_input")
             
             with c_top2:
-                # Dynamic AI Button
+                # ---------------------------------------------------------
+                # NEW: LOGIC TO HANDLE BOTH SUMMARY TYPES
+                # ---------------------------------------------------------
                 if n_type == "Discharge Summary":
-                    if st.button("✨ Auto-Summarize", help="Generate full summary from chart"):
-                        with st.spinner("AI Generating..."):
+                    # Option A: Full Document (For the Text Area / PDF)
+                    if st.button("✨ Write Full Letter", help="Generates long-form Discharge Letter"):
+                        with st.spinner("Writing Letter..."):
                             logs = patient['nurse_notes'] if patient['nurse_notes'] else ""
-                            summary = generate_ai_summary(patient, logs)
+                            summary = generate_ai_summary(patient, logs) # Your OLD function (Long)
                             st.session_state.current_note = summary
-                            st.rerun() # Refresh to show text
+                            st.rerun()
+                            
+                    # Option B: Database Abstract (For the History Column)
+                    if st.button("📌 Update History Abstract", help="Generates short paragraph for History Tab"):
+                        with st.spinner("Summarizing for DB..."):
+                            logs = patient['nurse_notes'] if patient['nurse_notes'] else ""
+                            # 1. Generate the Short Script
+                            short_script = generate_illness_script(patient, logs) # Your NEW function (Short)
+                            
+                            # 2. Save DIRECTLY to database (don't put in text area)
+                            database.update_full_patient_record(
+                                pid, patient['name'], patient['age'], patient['gender'], patient['complaint'],
+                                patient['arrival_mode'], patient['injury'], patient['mental'], patient['pain'], patient['nrs_pain'],
+                                patient['sbp'], patient['dbp'], patient['hr'], patient['rr'], patient['bt'], patient['saturation'],
+                                patient['triage_level'], patient['assigned_md'], patient['assigned_nppa'], patient['assigned_nurse'], 
+                                patient['nurse_notes'], # Keep notes same
+                                short_script # <--- SAVE TO clinical_summary COLUMN
+                            )
+                            st.toast("✅ History Abstract Updated!", icon="📌")
+                            
                 elif n_type == "Progress Note":
                     if st.button("💡 Care Plan", help="Suggest orders"):
                         vits = f"BP {patient['sbp']}/{patient['dbp']}, HR {patient['hr']}"
@@ -370,12 +416,46 @@ with t2:
         st.write("---")
         with st.expander("👨‍⚕️ Update Team", expanded=False):
             with st.form("team_form_2"):
-                u_md = st.selectbox("MD", md_list, index=get_index(md_list, patient['assigned_md']))
-                u_nppa = st.selectbox("APP", nppa_list, index=get_index(nppa_list, patient['assigned_nppa']))
-                u_nurse = st.selectbox("RN", nurse_list, index=get_index(nurse_list, patient['assigned_nurse']))
+                # LOGIC FIX: Ensure the CURRENTLY assigned staff are in the list,
+                # otherwise they disappear because they are technically "Busy".
+                
+                # 1. Prepare MD List
+                current_md = patient['assigned_md']
+                # Create a copy of available options so we don't mess up the global list
+                active_md_opts = md_opts.copy() 
+                if current_md and current_md not in active_md_opts:
+                    active_md_opts.append(current_md)
+                
+                # 2. Prepare NPPA List
+                current_nppa = patient['assigned_nppa']
+                active_nppa_opts = nppa_opts.copy()
+                if current_nppa and current_nppa not in active_nppa_opts:
+                    active_nppa_opts.append(current_nppa)
+
+                # 3. Prepare Nurse List
+                current_nurse = patient['assigned_nurse']
+                active_nurse_opts = nurse_opts.copy()
+                if current_nurse and current_nurse not in active_nurse_opts:
+                    active_nurse_opts.append(current_nurse)
+
+                # 4. Render Dropdowns (Fixed variable names)
+                u_md = st.selectbox("MD", active_md_opts, index=get_index(active_md_opts, current_md))
+                u_nppa = st.selectbox("APP", active_nppa_opts, index=get_index(active_nppa_opts, current_nppa))
+                u_nurse = st.selectbox("RN", active_nurse_opts, index=get_index(active_nurse_opts, current_nurse))
+                
                 if st.form_submit_button("Save Team"):
-                    database.assign_staff(pid, u_md, u_nppa, u_nurse)
+                    # Assuming you have a function to update just the team, 
+                    # otherwise use update_full_patient_record logic
+                    database.update_full_patient_record(
+                        pid, patient['name'], patient['age'], patient['gender'], patient['complaint'],
+                        patient['arrival_mode'], patient['injury'], patient['mental'], patient['pain'], patient['nrs_pain'],
+                        patient['sbp'], patient['dbp'], patient['hr'], patient['rr'], patient['bt'], patient['saturation'],
+                        patient['triage_level'], 
+                        u_md, u_nppa, u_nurse, # <--- NEW VALUES
+                        patient['nurse_notes']
+                    )
                     st.success("Updated")
+                    time.sleep(1)
                     st.rerun()
 
 # === TAB 3: AI AUDIT TRAIL ===
@@ -406,20 +486,79 @@ with t3:
         explanation_text = patient['ai_explanation'] if patient['ai_explanation'] else "No explanation data available."
         st.text_area("Clinical Justification (Read-Only)", value=explanation_text, height=300, disabled=True)
 
-# === TAB 4: HISTORY ===
+# === TAB 4: HISTORY (TIMELINE VIEW) ===
 with t4:
-    st.markdown(f"### Medical History: {patient['name']}")
-    st.caption(f"Searching for records matching Name + DOB ({patient.get('dob', 'Unknown')})")
+    st.markdown(f"### 🗂️ Medical Timeline: {patient['name']}")
+    
+    # 1. Fetch History
     history = database.get_patient_history(patient['name'], patient.get('dob'))
     
     if not history.empty:
-        past_visits = history[history['id'] != pid]
+        # Filter out current visit so we don't show the one we are editing
+        past_visits = history[history['id'] != int(pid)].copy()
+        
         if not past_visits.empty:
-            st.dataframe(past_visits, column_config={"arrival_time": "Date", "complaint": "Chief Complaint", "triage_level": "KTAS", "final_disposition": "Outcome"}, use_container_width=True)
+            st.caption(f"Found {len(past_visits)} past encounters.")
+            
+            # 2. Iterate and Create "Clinical Cards"
+            for index, row in past_visits.iterrows():
+                
+                # --- CARD CONTAINER ---
+                with st.container(border=True):
+                    
+                    # A. HEADER ROW (Date | Complaint | KTAS)
+                    c_date, c_complaint, c_score, c_btn = st.columns([1.5, 3, 1, 1.5], vertical_alignment="center")
+                    
+                    # Date formatting
+                    try:
+                        visit_date = pd.to_datetime(row['arrival_time']).strftime("%b %d, %Y")
+                        visit_time = pd.to_datetime(row['arrival_time']).strftime("%H:%M")
+                    except:
+                        visit_date = str(row['arrival_time'])
+                        visit_time = ""
+
+                    with c_date:
+                        st.write(f"**{visit_date}**")
+                        st.caption(visit_time)
+                    
+                    with c_complaint:
+                        st.write(f"🏥 **{row['complaint']}**")
+                        st.caption(f"Outcome: {row['final_disposition']}")
+                    
+                    with c_score:
+                        # Color code the badge
+                        lvl = row['triage_level']
+                        color = "#d32f2f" if lvl <= 2 else "#fbc02d" if lvl == 3 else "#388e3c"
+                        st.markdown(f"<span style='color:{color}; font-weight:bold; border:1px solid {color}; padding:2px 6px; border-radius:4px;'>KTAS {lvl}</span>", unsafe_allow_html=True)
+                    
+                    with c_btn:
+                        # Unique key is crucial for buttons in loops
+                        if st.button("📂 Open", key=f"open_{row['id']}", use_container_width=True):
+                            st.session_state['selected_patient_id'] = int(row['id'])
+                            st.rerun()
+                    
+                    # B. THE SYNOPSIS (The "At a Glance" Part)
+                    # Check if summary exists, otherwise show placeholder
+                    summary_text = row.get('clinical_summary')
+                    if pd.isna(summary_text) or summary_text == "":
+                        summary_text = "No clinical summary recorded for this visit."
+                        bg_color = "#f0f2f6" # Gray for empty
+                    else:
+                        bg_color = "#e3f2fd" # Light Blue for content
+                    
+                    # Render the summary in a colored block for readability
+                    st.markdown(
+                        f"""
+                        <div style="background-color: {bg_color}; padding: 10px; border-radius: 5px; border-left: 5px solid #2196f3; font-size: 14px; color: #333;">
+                            <i><b>Clinical Synopsis:</b></i> {summary_text}
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
         else:
             st.info("No prior visits found.")
     else:
-        st.warning("No records found.")
+        st.warning("No records found in database.")
 
 # ---------------------------------------------------------
 # FOOTER ACTIONS

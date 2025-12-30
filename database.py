@@ -2,7 +2,8 @@
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
-import random 
+import random
+import ollama  # Ensure ollama is installed and configured 
 
 DB_NAME = "hospital.db"
 
@@ -41,6 +42,7 @@ def init_db():
             confidence REAL,
             ai_explanation TEXT,
             nurse_notes TEXT,
+            clinical_summary TEXT,  -- NEW: Dedicated column for the AI Paragraph  
             final_disposition TEXT,
             
             -- Staffing
@@ -239,25 +241,30 @@ def get_patient_by_id(patient_id):
     if row: return dict(row)
     return None
 
+# Update the function signature and SQL
 def update_full_patient_record(patient_id, name, age, gender, complaint, 
                                arrival_mode, injury, mental, pain, nrs_pain,
                                sbp, dbp, hr, rr, bt, sat, 
-                               triage_level, md, nppa, nurse, notes):
-    """Updates all clinical fields."""
+                               triage_level, md, nppa, nurse, notes, 
+                               summary=None): # <-- NEW ARGUMENT
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    
+    # We use COALESCE to keep the old summary if the new one is None
     c.execute('''
         UPDATE patients 
         SET name=?, age=?, gender=?, complaint=?, 
             arrival_mode=?, injury=?, mental=?, pain=?, nrs_pain=?, 
             sbp=?, dbp=?, hr=?, rr=?, bt=?, saturation=?, 
-            triage_level=?, assigned_md=?, assigned_nppa=?, assigned_nurse=?, nurse_notes=?
+            triage_level=?, assigned_md=?, assigned_nppa=?, assigned_nurse=?, nurse_notes=?,
+            clinical_summary = COALESCE(?, clinical_summary)  -- <-- NEW UPDATE LOGIC
         WHERE id=?
     ''', (
         name, age, gender, complaint, 
         arrival_mode, injury, mental, pain, nrs_pain,
         sbp, dbp, hr, rr, bt, sat, 
         triage_level, md, nppa, nurse, notes, 
+        summary, # <-- Pass the summary here
         patient_id
     ))
     conn.commit()
@@ -409,25 +416,6 @@ def discharge_patient(patient_id):
     conn.commit()
     conn.close()
 
-def discharge_patient_and_free_bed(patient_id):
-    """Real World Discharge: Patient leaves, bed becomes Dirty (Cleaning)."""
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    
-    # 1. Discharge Patient
-    c.execute("UPDATE patients SET status='Discharged', final_disposition='Home' WHERE id=?", (patient_id,))
-    
-    # 2. Find Bed & Mark Dirty
-    c.execute("SELECT id FROM beds WHERE current_patient_id=?", (patient_id,))
-    row = c.fetchone()
-    
-    if row:
-        bed_id = row[0]
-        c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE id=?", (bed_id,))
-    
-    conn.commit()
-    conn.close()
-
 def get_available_staff(role):
     """
     Returns a list of staff members who are NOT currently assigned 
@@ -472,6 +460,112 @@ def get_available_staff(role):
     available_staff.sort()
     
     return available_staff
+
+# ---------------------------------------------------------
+# ADD THESE FUNCTIONS TO database.py
+# ---------------------------------------------------------
+
+def transfer_patient(patient_id, new_bed_id):
+    """
+    Moves a patient from their current bed to a new bed.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        # FIX: Force Integer Cast
+        pid = int(patient_id)
+        
+        # 1. Find the Old Bed (if exists) and mark it Dirty
+        c.execute("SELECT id FROM beds WHERE current_patient_id = ?", (pid,))
+        row = c.fetchone()
+        
+        if row:
+            old_bed_id = row[0]
+            c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE id=?", (old_bed_id,))
+        
+        # 2. Occupy the New Bed
+        c.execute("UPDATE beds SET status='Occupied', current_patient_id=? WHERE id=?", (pid, new_bed_id))
+        
+        # 3. Ensure Patient Status is correct
+        c.execute("UPDATE patients SET status='In-Treatment' WHERE id=?", (pid,))
+
+        conn.commit()
+        return True
+
+    except Exception as e:
+        print(f"Error transferring patient: {e}")
+        return False
+    finally:
+        conn.close()
+
+def generate_illness_script_internal(patient_dict, logs):
+    """
+    Internal helper for database.py to generate summary.
+    """
+    prompt = f"""
+    Act as a Doctor. Write a 1-paragraph Clinical Synopsis for:
+    Patient: {patient_dict['name']} ({patient_dict['age']} {patient_dict['gender']})
+    Complaint: {patient_dict['complaint']}
+    Notes: {logs}
+    Task: Summarize diagnosis, treatment, and outcome in 3 sentences.
+    """
+    try:
+        response = ollama.chat(model='gemini-3-flash-preview:cloud', messages=[{'role': 'user', 'content': prompt}])
+        return response['message']['content']
+    except Exception as e:
+        return "Summary unavailable."
+
+def discharge_patient_and_free_bed(patient_id):
+    """
+    Discharges patient, frees bed, and auto-generates AI History Summary.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    # FIX 1: Use Row Factory so we can access columns by name (['name'] instead of [1])
+    conn.row_factory = sqlite3.Row 
+    c = conn.cursor()
+    
+    try:
+        # FIX 2: Force Integer Cast to prevent "Not Found" error
+        pid = int(patient_id)
+        
+        # 1. Fetch the full patient record BEFORE discharging
+        c.execute("SELECT * FROM patients WHERE id = ?", (pid,))
+        patient_data = c.fetchone()
+        
+        if not patient_data:
+            print(f"Error: Patient ID {pid} not found for discharge.")
+            return False
+
+        # Convert Row to Dict for the AI Helper
+        p_dict = dict(patient_data)
+        
+        # 2. Generate the Clinical Summary
+        notes = p_dict.get('nurse_notes', '')
+        summary_text = generate_illness_script_internal(p_dict, notes)
+        
+        # 3. Update Patient (Set Discharged + Save Summary)
+        c.execute("""
+            UPDATE patients 
+            SET status='Discharged', final_disposition='Home', clinical_summary = ? 
+            WHERE id=?
+        """, (summary_text, pid))
+        
+        # 4. Find Bed & Mark Dirty
+        c.execute("SELECT id FROM beds WHERE current_patient_id=?", (pid,))
+        row = c.fetchone()
+        
+        if row:
+            bed_id = row[0]
+            c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE id=?", (bed_id,))
+        
+        conn.commit()
+        return True
+
+    except Exception as e:
+        print(f"Error during discharge: {e}")
+        return False
+    finally:
+        conn.close()    
 
 # Initialize on run
 init_db()

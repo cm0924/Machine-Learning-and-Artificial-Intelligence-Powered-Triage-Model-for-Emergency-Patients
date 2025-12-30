@@ -217,9 +217,36 @@ def show_transfer_popup(patient_id, current_name, current_loc):
                 st.error("Transfer Failed.")
 
 # ---------------------------------------------------------
-# 4. ACTION BAR (Updated)
+# 4. ACTION BAR (Updated with Safe Discharge)
 # ---------------------------------------------------------
 st.markdown("---")
+
+# --- CONFIRMATION DIALOG FOR DISCHARGE ---
+@st.dialog("⚠️ Confirm Discharge")
+def confirm_discharge(patient_id, name, bed_label):
+    st.warning(f"Are you sure you want to discharge **{name}**?")
+    st.caption(f"This will free up **{bed_label}** and move it to 'Cleaning'.")
+    st.caption("📝 An AI Clinical Summary will be auto-generated for the history.")
+    
+    col_yes, col_no = st.columns(2)
+    with col_yes:
+        if st.button("✅ Yes, Discharge", type="primary", use_container_width=True):
+            with st.spinner("Processing Discharge & Generating Summary..."):
+                # Call the DB function
+                success = database.discharge_patient_and_free_bed(patient_id)
+                
+                if success:
+                    st.success("Patient Discharged!")
+                    # CRITICAL FIX: Clear the selection so the UI resets
+                    st.session_state.selected_patient_id = None
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Error: Could not discharge. Check console logs.")
+    
+    with col_no:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.rerun()
 
 if selected_patient_id:
     # Fetch latest data
@@ -253,17 +280,13 @@ if selected_patient_id:
                 if st.button("👨‍⚕️ Start Treatment", use_container_width=True):
                     show_treatment_popup(selected_patient_id, p_name)
             else:
+                # UPDATED: Call the dialog instead of direct function
                 if st.button("✅ Discharge", use_container_width=True):
-                    database.discharge_patient_and_free_bed(selected_patient_id)
-                    st.success(f"Discharged. {current_bed} is now Dirty/Cleaning.")
-                    time.sleep(1.5)
-                    st.rerun()
+                    confirm_discharge(selected_patient_id, p_name, current_bed)
 
-        # 3. TRANSFER (NEW FEATURE)
+        # 3. TRANSFER
         with col_c:
-            # Only enable transfer if they are NOT waiting (i.e., they are in the system)
-            # Or if they are waiting, you could transfer them to a bed directly.
-            if st.button("⇄ Change Room", use_container_width=True, help="Move patient to a different bed"):
+            if st.button("⇄ Change Room", use_container_width=True):
                 show_transfer_popup(selected_patient_id, p_name, current_bed)
 
         # 4. BED MANAGER
@@ -272,7 +295,9 @@ if selected_patient_id:
                 st.switch_page("pages/9_Bed_Manager.py")
                 
     else:
-        st.error("Patient data not found. Please refresh.")
+        # If patient was just discharged, this might hit if logic is fast
+        st.session_state.selected_patient_id = None
+        st.rerun()
 else:
     st.caption("👆 **Select a patient** from the list above to view actions.")
     
