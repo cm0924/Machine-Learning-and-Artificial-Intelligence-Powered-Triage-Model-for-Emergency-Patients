@@ -2,98 +2,164 @@ import streamlit as st
 import time
 import database
 
-# 1. SETUP PAGE & HIDE SIDEBAR INITIALLY
-st.set_page_config(page_title="Hospital System", page_icon="🏥", layout="centered")
+# 1. SETUP PAGE
+st.set_page_config(
+    page_title="MediCore EHR Login", 
+    page_icon="🏥", 
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-# --- CSS TO HIDE SIDEBAR ON LOGIN PAGE ---
+# --- PROFESSIONAL STYLING (CSS) ---
 st.markdown("""
 <style>
-    [data-testid="stSidebar"] {
-        display: none;
+    /* 1. HIDE DEFAULT STREAMLIT ELEMENTS */
+    [data-testid="stSidebar"] {display: none;}
+    [data-testid="collapsedControl"] {display: none;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* 2. BACKGROUND COLOR (Soft Medical Grey) */
+    .stApp {
+        background-color: #e8eaed;
     }
-    [data-testid="collapsedControl"] {
-        display: none;
+
+    /* 3. LOGIN CARD STYLING (Force White Background + Dark Text) */
+    /* This targets the container with the border */
+    div[data-testid="stVerticalBlockBorderWrapper"] > div {
+        background-color: #ffffff !important;
+        border: 1px solid #d1d5db !important;
+        border-radius: 12px !important;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.05) !important;
+        padding: 2rem !important;
     }
-    /* Optional: Center the camera widget */
-    div[data-testid="stCameraInput"] {
-        text-align: center;
-        margin: 0 auto;
+
+    /* 4. FORCE TEXT VISIBILITY (Fix for Dark Mode Users) */
+    h1, h2, h3, h4, h5, p, span, div, label {
+        color: #1f2937 !important; /* Dark Grey Text */
+    }
+    
+    /* 5. INPUT FIELDS (Clean Borders) */
+    div[data-testid="stTextInput"] input {
+        background-color: #f9fafb !important;
+        border: 1px solid #d1d5db !important;
+        color: #111827 !important; /* Dark Text inside inputs */
+        border-radius: 6px;
+    }
+    div[data-testid="stTextInput"] input:focus {
+        border-color: #2563eb !important; /* Blue focus */
+    }
+
+    /* 6. BUTTON STYLING */
+    div[data-testid="stButton"] button {
+        width: 100%;
+        border-radius: 6px;
+        font-weight: 600;
+        height: 45px;
+    }
+    
+    /* 7. TABS STYLING */
+    div[data-testid="stTabs"] button {
+        font-weight: bold;
+        color: #4b5563 !important;
+    }
+    div[data-testid="stTabs"] button[aria-selected="true"] {
+        color: #2563eb !important; /* Active Tab Blue */
+        border-bottom-color: #2563eb !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # 2. INITIALIZE SESSION STATE
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'user_role' not in st.session_state:
-    st.session_state.user_role = None
-if 'username' not in st.session_state:
-    st.session_state.username = None
+if 'logged_in' not in st.session_state: st.session_state.logged_in = False
+if 'user_role' not in st.session_state: st.session_state.user_role = None
+if 'username' not in st.session_state: st.session_state.username = None
 
-# 3. LOGIN LOGIC
+# 3. LOGIN FLOW
 if not st.session_state.logged_in:
-    st.title("🏥 EHR System Login")
     
-    # Header Image
-    col_logo, col_text = st.columns([1, 4])
-    with col_logo:
-        st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=80)
-    with col_text:
-        st.markdown("### Secure Access Portal")
-        st.caption("Please authenticate using your credentials or biometrics.")
-
-    st.write("---")
-
-    # --- TABS FOR LOGIN METHOD ---
-    tab_pass, tab_face = st.tabs(["🔑 Password Login", "📸 Face ID"])
-
-    # === TAB 1: TRADITIONAL PASSWORD ===
-    with tab_pass:
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
+    # --- LAYOUT: CENTERED CARD ---
+    col_l, col_main, col_r = st.columns([1, 8, 1])
+    
+    with col_main:
+        # We use a container to wrap the login logic visually
+        with st.container(border=True):
             
-            if st.form_submit_button("Login", type="primary", use_container_width=True):
-                is_valid, role = database.verify_login(username, password)
-                
-                if is_valid:
-                    st.session_state.logged_in = True
-                    st.session_state.user_role = role
-                    st.session_state.username = username
-                    st.success(f"Welcome back, {username}!")
-                    time.sleep(0.5)
-                    st.switch_page("pages/1_Dashboard.py")
-                else:
-                    st.error("Invalid Username or Password")
+            # HEADER
+            c_logo, c_title = st.columns([1.5, 5], vertical_alignment="center")
+            with c_logo:
+                st.markdown("<div style='font-size: 40px; text-align:center;'>🏥</div>", unsafe_allow_html=True)
+            with c_title:
+                st.markdown("<h3 style='margin:0; padding:0;'>MediCore EHR</h3>", unsafe_allow_html=True)
+                st.markdown("<p style='font-size:14px; margin:0; color:#6b7280 !important;'>Secure Clinical Access Portal</p>", unsafe_allow_html=True)
             
-            st.caption("Default: **nurse** / **admin**")
+            st.markdown("<hr style='margin: 15px 0; border-top: 1px solid #e5e7eb;'>", unsafe_allow_html=True)
 
-    # === TAB 2: FACIAL RECOGNITION (SNAPSHOT) ===
-    with tab_face:
-        st.markdown("##### 👤 Biometric Scan")
-        st.caption("Look directly at the camera and click 'Take Photo'.")
-        
-        # Simple, Stable Camera Input
-        img_buffer = st.camera_input("Scan Face", label_visibility="collapsed")
-        
-        if img_buffer is not None:
-            with st.spinner("Verifying Biometrics..."):
-                # Call the function in database.py
-                # Returns: (Success_Bool, Role, Username/ErrorMsg)
-                success, role, result_data = database.login_with_face(img_buffer)
-                
-                if success:
-                    st.session_state.logged_in = True
-                    st.session_state.user_role = role
-                    st.session_state.username = result_data # result_data is username on success
+            # --- TABS ---
+            tab_pass, tab_face = st.tabs(["🔑 Password Access", "👤 Face ID"])
+
+            # === TAB 1: PASSWORD LOGIN ===
+            with tab_pass:
+                with st.form("login_form", clear_on_submit=True):
+                    st.write("") # Spacer
+                    username = st.text_input("Username", placeholder="Enter System ID")
+                    password = st.text_input("Password", type="password", placeholder="••••••••")
                     
-                    st.success(f"✅ Face Recognized! Welcome, {result_data}.")
-                    time.sleep(1)
-                    st.switch_page("pages/1_Dashboard.py")
-                else:
-                    # result_data is Error Message on failure
-                    st.error(f"❌ Access Denied: {result_data}")
-                    st.caption("Tip: Ensure good lighting and look straight ahead.")
+                    st.write("") # Spacer
+                    submitted = st.form_submit_button("🔒 Login", type="primary")
+                    
+                    if submitted:
+                        with st.spinner("Verifying Credentials..."):
+                            time.sleep(0.8) # Simulated delay for realism
+                            is_valid, role = database.verify_login(username, password)
+                            
+                            if is_valid:
+                                st.session_state.logged_in = True
+                                st.session_state.user_role = role
+                                st.session_state.username = username
+                                st.success("Access Granted.")
+                                time.sleep(0.5)
+                                st.switch_page("pages/1_Dashboard.py")
+                            else:
+                                st.error("❌ Authentication Failed: Invalid ID or Password.")
+
+            # === TAB 2: BIOMETRIC LOGIN ===
+            with tab_face:
+                st.markdown(
+                    """
+                    <div style="text-align: center; color: #4b5563 !important; font-size: 14px; margin-bottom: 15px;">
+                        Position your face within the frame.<br>Ensure proper lighting for accurate scanning.
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+                
+                # Camera Input
+                img_buffer = st.camera_input("Biometric Scanner", label_visibility="collapsed")
+                
+                if img_buffer is not None:
+                    with st.spinner("Processing Biometric Data..."):
+                        success, role, result_data = database.login_with_face(img_buffer)
+                        
+                        if success:
+                            st.session_state.logged_in = True
+                            st.session_state.user_role = role
+                            st.session_state.username = result_data
+                            
+                            st.success(f"✅ Identity Verified: {result_data}")
+                            time.sleep(1)
+                            st.switch_page("pages/1_Dashboard.py")
+                        else:
+                            st.error(f"❌ Biometric Mismatch: {result_data}")
+                            st.caption("Please try again or use your password.")
+
+    # --- FOOTER ---
+    st.markdown("""
+        <div style="text-align: center; margin-top: 40px; color: #6b7280 !important; font-size: 11px;">
+            Authorized Use Only • MediCore Systems 🔒<br>
+            Unauthorized access is a violation of hospital policy and applicable laws.
+        </div>
+    """, unsafe_allow_html=True)
 
 # If already logged in, redirect immediately
 else:
