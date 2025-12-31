@@ -4,6 +4,11 @@ import pandas as pd
 from datetime import datetime, timedelta
 import random
 import ollama  # Ensure ollama is installed and configured 
+import face_recognition
+import numpy as np
+import pickle # To save the array as bytes
+from PIL import Image
+
 
 DB_NAME = "hospital.db"
 
@@ -11,6 +16,13 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
+    # Check if column exists, if not add it (Migration logic)
+    c.execute("PRAGMA table_info(users)")
+    columns = [info[1] for info in c.fetchall()]
+    if 'face_encoding' not in columns:
+        print("Migrating DB: Adding face_encoding column...")
+        c.execute("ALTER TABLE users ADD COLUMN face_encoding BLOB")
+
     # 1. PATIENTS TABLE (Updated with DOB and Clinical Fields)
     c.execute('''
         CREATE TABLE IF NOT EXISTS patients (
@@ -151,7 +163,88 @@ def init_db():
     conn.close()
 
 # --- LOGIN & USER MANAGEMENT ---
+# 2. FUNCTION TO REGISTER FACE
+def register_face(user_id, image_buffer):
+    try:
+        # 1. Load with Pillow
+        img = Image.open(image_buffer)
+        
+        # 2. Convert to RGB
+        img = img.convert('RGB')
+        
+        # 3. Create Numpy Array (uint8)
+        img_array = np.array(img, dtype=np.uint8)
+        
+        # 4. CRITICAL: Make memory contiguous (Fixes some Dlib reading errors)
+        img_array = np.ascontiguousarray(img_array)
+        
+        # Debug info
+        print(f"DEBUG: Processing Image. Shape: {img_array.shape}, Dtype: {img_array.dtype}")
+        
+        # 5. Encode
+        encodings = face_recognition.face_encodings(img_array)
+        
+        if len(encodings) > 0:
+            face_data = encodings[0]
+            face_blob = pickle.dumps(face_data)
+            
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            c.execute("UPDATE users SET face_encoding = ? WHERE id = ?", (face_blob, user_id))
+            conn.commit()
+            conn.close()
+            return True, "✅ Face ID enrolled successfully!"
+        else:
+            return False, "⚠️ No face detected. Adjust lighting and try again."
+            
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return False, f"System Error: {str(e)}"
 
+# 3. FUNCTION TO LOGIN WITH FACE
+def login_with_face(image_buffer):
+    """
+    Compares input photo with all users in DB.
+    """
+    try:
+        # 1. Load & Convert Input Image to RGB
+        img = Image.open(image_buffer)
+        img = img.convert('RGB') # <--- CRITICAL FIX
+        unknown_image = np.array(img)
+        
+        # 2. Encode Input Face
+        unknown_encodings = face_recognition.face_encodings(unknown_image)
+        
+        if len(unknown_encodings) == 0:
+            return False, None, "No face detected."
+            
+        unknown_encoding = unknown_encodings[0]
+
+        # 3. Fetch Registered Faces
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT id, role, full_name, username, face_encoding FROM users WHERE face_encoding IS NOT NULL")
+        users = c.fetchall()
+        conn.close()
+
+        # 4. Compare
+        for u_id, role, name, username, face_blob in users:
+            try:
+                known_encoding = pickle.loads(face_blob)
+                
+                # Compare (Tolerance: 0.5 is strict, 0.6 is loose)
+                results = face_recognition.compare_faces([known_encoding], unknown_encoding, tolerance=0.5)
+                
+                if results[0]:
+                    return True, role, username # Match found!
+            except:
+                continue # Skip corrupted data
+                
+        return False, None, "Face not recognized."
+        
+    except Exception as e:
+        return False, None, f"Error: {e}"
+    
 def verify_login(username, password):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()

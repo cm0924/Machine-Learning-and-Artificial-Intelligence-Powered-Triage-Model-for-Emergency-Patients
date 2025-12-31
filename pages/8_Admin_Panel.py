@@ -117,3 +117,22 @@ with tab3:
         database.delete_user(user_id_to_delete)
         st.success("User deleted.")
         st.rerun()
+
+st.subheader("📸 Face ID Enrollment")
+
+# Select User to Enroll
+users = database.get_all_users()
+user_map = {f"{row['full_name']} ({row['role']})": row['id'] for i, row in users.iterrows()}
+target_user = st.selectbox("Select Staff Member", list(user_map.keys()))
+
+# Camera Input
+img_file = st.camera_input("Take a clear photo for enrollment")
+
+if img_file is not None:
+    if st.button("💾 Save Face ID"):
+        user_id = user_map[target_user]
+        success, msg = database.register_face(user_id, img_file)
+        if success:
+            st.success(msg)
+        else:
+            st.error(msg)        
