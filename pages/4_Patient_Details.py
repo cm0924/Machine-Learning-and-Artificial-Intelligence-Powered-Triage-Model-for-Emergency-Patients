@@ -123,7 +123,18 @@ def show_transfer_dialog_ehr(patient_id, current_bed_label):
                 st.error("Please enter a reason.")
             else:
                 new_bed_id = bed_map[new_bed_label]
-                success = database.transfer_patient(patient_id, new_bed_id, reason)
+                
+                # --- GET CURRENT USER ---
+                current_user = st.session_state.get('username', 'Unknown')
+                
+                # --- PASS TO DATABASE ---
+                success = database.transfer_patient(
+                    patient_id, 
+                    new_bed_id, 
+                    reason, 
+                    author_username=current_user # <--- NEW
+                )
+                
                 if success:
                     st.success("Transfer Complete!")
                     time.sleep(1)
@@ -513,76 +524,86 @@ with t3:
         st.text_area("Clinical Justification (Read-Only)", value=explanation_text, height=300, disabled=True)
 
 # === TAB 4: HISTORY (TIMELINE VIEW) ===
+# === TAB 4: HISTORY (TIMELINE VIEW) ===
 with t4:
     st.markdown(f"### 🗂️ Medical Timeline: {patient['name']}")
     
     # 1. Fetch History
+    # Note: We fetch ALL records for this person
     history = database.get_patient_history(patient['name'], patient.get('dob'))
     
     if not history.empty:
-        # Filter out current visit so we don't show the one we are editing
-        past_visits = history[history['id'] != int(pid)].copy()
+        st.caption(f"Total encounters found: {len(history)}")
         
-        if not past_visits.empty:
-            st.caption(f"Found {len(past_visits)} past encounters.")
+        # 2. Iterate through ALL visits (including the current one)
+        for index, row in history.iterrows():
             
-            # 2. Iterate and Create "Clinical Cards"
-            for index, row in past_visits.iterrows():
+            # Check if this row is the one we are currently looking at
+            is_current = (row['id'] == int(pid))
+            
+            # Border style: Blue highlight if current, Gray if past
+            b_style = "border: 2px solid #2196f3;" if is_current else "border: 1px solid #ddd;"
+            bg_style = "background-color: #f8fbff;" if is_current else ""
+            
+            # Custom Container using HTML/CSS for distinction
+            with st.container():
+                st.markdown(f"<div style='{b_style} {bg_style} border-radius: 10px; padding: 15px; margin-bottom: 15px;'>", unsafe_allow_html=True)
                 
-                # --- CARD CONTAINER ---
-                with st.container(border=True):
-                    
-                    # A. HEADER ROW (Date | Complaint | KTAS)
-                    c_date, c_complaint, c_score, c_btn = st.columns([1.5, 3, 1, 1.5], vertical_alignment="center")
-                    
-                    # Date formatting
-                    try:
-                        visit_date = pd.to_datetime(row['arrival_time']).strftime("%b %d, %Y")
-                        visit_time = pd.to_datetime(row['arrival_time']).strftime("%H:%M")
-                    except:
-                        visit_date = str(row['arrival_time'])
-                        visit_time = ""
+                # A. HEADER ROW
+                c_date, c_complaint, c_score, c_btn = st.columns([1.5, 3, 1, 1.5], vertical_alignment="center")
+                
+                try:
+                    visit_date = pd.to_datetime(row['arrival_time']).strftime("%b %d, %Y")
+                    visit_time = pd.to_datetime(row['arrival_time']).strftime("%H:%M")
+                except:
+                    visit_date = str(row['arrival_time'])
+                    visit_time = ""
 
-                    with c_date:
+                with c_date:
+                    if is_current:
+                        st.markdown(f"**📍 {visit_date}** (Current)")
+                    else:
                         st.write(f"**{visit_date}**")
-                        st.caption(visit_time)
-                    
-                    with c_complaint:
-                        st.write(f"🏥 **{row['complaint']}**")
-                        st.caption(f"Outcome: {row['final_disposition']}")
-                    
-                    with c_score:
-                        # Color code the badge
-                        lvl = row['triage_level']
-                        color = "#d32f2f" if lvl <= 2 else "#fbc02d" if lvl == 3 else "#388e3c"
-                        st.markdown(f"<span style='color:{color}; font-weight:bold; border:1px solid {color}; padding:2px 6px; border-radius:4px;'>KTAS {lvl}</span>", unsafe_allow_html=True)
-                    
-                    with c_btn:
-                        # Unique key is crucial for buttons in loops
+                    st.caption(visit_time)
+                
+                with c_complaint:
+                    st.write(f"🏥 **{row['complaint']}**")
+                    st.caption(f"Outcome: {row['final_disposition']}")
+                
+                with c_score:
+                    lvl = row['triage_level']
+                    color = "#d32f2f" if lvl <= 2 else "#fbc02d" if lvl == 3 else "#388e3c"
+                    st.markdown(f"<span style='color:{color}; font-weight:bold; border:1px solid {color}; padding:2px 6px; border-radius:4px;'>KTAS {lvl}</span>", unsafe_allow_html=True)
+                
+                with c_btn:
+                    if is_current:
+                        st.button("👁️ Viewing", key=f"curr_{row['id']}", disabled=True, use_container_width=True)
+                    else:
                         if st.button("📂 Open", key=f"open_{row['id']}", use_container_width=True):
                             st.session_state['selected_patient_id'] = int(row['id'])
                             st.rerun()
-                    
-                    # B. THE SYNOPSIS (The "At a Glance" Part)
-                    # Check if summary exists, otherwise show placeholder
-                    summary_text = row.get('clinical_summary')
-                    if pd.isna(summary_text) or summary_text == "":
-                        summary_text = "No clinical summary recorded for this visit."
-                        bg_color = "#f0f2f6" # Gray for empty
-                    else:
-                        bg_color = "#e3f2fd" # Light Blue for content
-                    
-                    # Render the summary in a colored block for readability
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {bg_color}; padding: 10px; border-radius: 5px; border-left: 5px solid #2196f3; font-size: 14px; color: #333;">
-                            <i><b>Clinical Synopsis:</b></i> {summary_text}
-                        </div>
-                        """, 
-                        unsafe_allow_html=True
-                    )
-        else:
-            st.info("No prior visits found.")
+                
+                # B. THE SYNOPSIS (The AI Generated Part)
+                summary_text = row.get('clinical_summary')
+                
+                # Logic to determine box color
+                if pd.isna(summary_text) or summary_text == "":
+                    summary_text = "No clinical summary recorded."
+                    note_color = "#f0f2f6" # Gray
+                else:
+                    note_color = "#e3f2fd" # Blue (Shows data exists)
+
+                st.markdown(
+                    f"""
+                    <div style="background-color: {note_color}; padding: 10px; border-radius: 5px; border-left: 5px solid #2196f3; font-size: 14px; color: #333; margin-top: 10px;">
+                        <i><b>Clinical Synopsis:</b></i> {summary_text}
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+                
+                st.markdown("</div>", unsafe_allow_html=True) # Close custom container
+
     else:
         st.warning("No records found in database.")
 

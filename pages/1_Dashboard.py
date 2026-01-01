@@ -2,329 +2,341 @@ import streamlit as st
 import database
 import pandas as pd
 import time
+from datetime import datetime
 
 # ---------------------------------------------------------
 # SECURITY CHECK
 # ---------------------------------------------------------
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
-    st.warning("⚠️ You must log in to access this page.")
+    st.warning("⚠️ Access Restricted. Redirecting to Login...")
     time.sleep(1)
     st.switch_page("app.py")
     st.stop()
     
-st.set_page_config(page_title="ED Live Status", layout="wide", page_icon="🏥")
+st.set_page_config(page_title="ED Live Track Board", layout="wide", page_icon="🏥")
 
-# --- HEADER & REFRESH ---
-col_header, col_refresh = st.columns([5, 1])
-with col_header:
-    st.title("🏥 Emergency Department Status Board")
-with col_refresh:
-    st.write("##") # Spacer
-    if st.button("🔄 Refresh Data", use_container_width=True):
-        st.rerun()
-
-# ---------------------------------------------------------
-# 1. LOAD DATA & CALCULATE METRICS
-# ---------------------------------------------------------
-# A. Get Patients
-df_patients = database.get_all_patients()
-active_patients = df_patients[df_patients['status'] != 'Discharged'].copy()
-
-# --- FIX: STALE DATA CLEANER ---
-# If the browser remembers a patient ID that no longer exists in the DB (e.g., after DB reset), clear it.
-if 'selected_patient_id' in st.session_state and st.session_state.selected_patient_id is not None:
-    valid_ids = active_patients['id'].tolist()
-    if st.session_state.selected_patient_id not in valid_ids:
-        st.toast("⚠️ Data was reset. Clearing selection.")
-        st.session_state.selected_patient_id = None
-        st.rerun()
-# -------------------------------
-
-waiting_patients = active_patients[active_patients['status'] == 'Waiting']
-
-# B. Get Staff Lists
-md_list = [""] + database.get_staff_by_role("doctor")
-nppa_list = [""] + database.get_staff_by_role("nppa")
-nurse_list = [""] + database.get_staff_by_role("nurse")
-
-# C. Get Real-Time Bed Data
-beds_df = database.get_all_beds()
-
-# Calculate Available Beds by Department
-er_beds_total = len(beds_df[beds_df['department'] == 'Emergency'])
-er_beds_free = len(beds_df[(beds_df['department'] == 'Emergency') & (beds_df['status'] == 'Available')])
-
-icu_beds_free = len(beds_df[(beds_df['department'] == 'ICU') & (beds_df['status'] == 'Available')])
-ward_beds_free = len(beds_df[(beds_df['department'] == 'Ward') & (beds_df['status'] == 'Available')])
-
-# D. Calculate Wait Time Logic
-doc_count = max(1, len(md_list) - 1)
-est_wait = int((len(waiting_patients) * 15) / doc_count)
-
-# ---------------------------------------------------------
-# 2. STATUS BOARD (KPIs)
-# ---------------------------------------------------------
-st.markdown("### 📊 Real-Time Metrics")
-
+# --- CSS STYLING ---
 st.markdown("""
 <style>
+    .block-container {padding-top: 1.5rem; padding-bottom: 3rem;}
     div[data-testid="metric-container"] {
-        background-color: #ffffff;
-        border: 1px solid #e6e6e6;
-        padding: 15px;
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        background-color: #f8f9fa; border: 1px solid #dee2e6;
+        padding: 10px; border-radius: 8px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    .action-bar {
+        background-color: #e3f2fd; padding: 15px;
+        border-radius: 10px; border-left: 5px solid #2196f3;
+        margin-top: 20px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-m1, m2, m3, m4, m5 = st.columns(5)
-
-m1.metric("Active Patients", len(active_patients), "Current Load")
-m2.metric("Waiting Room", len(waiting_patients), "Needs Triage", delta_color="inverse")
-m3.metric("Est. Wait Time", f"{est_wait} min", "Avg per patient")
-
-bed_delta_color = "normal" if er_beds_free > 3 else "inverse"
-m4.metric(
-    label="🚨 ER Beds Free", 
-    value=f"{er_beds_free} / {er_beds_total}", 
-    delta=f"ICU: {icu_beds_free} | Ward: {ward_beds_free}",
-    delta_color=bed_delta_color 
-)
-
-m5.metric("Staff On-Duty", len(md_list) + len(nurse_list) - 2, "MDs + Nurses")
-
-st.markdown("---")
-
 # ---------------------------------------------------------
-# 3. PATIENT TRACKING (Interactive Selection)
+# 1. LOAD DATA & MAPPING
 # ---------------------------------------------------------
-st.subheader(f"📋 Patient Queue ({len(waiting_patients)} Waiting)")
+df_patients = database.get_all_patients()
+active_patients = df_patients[df_patients['status'] != 'Discharged'].copy()
 
-selected_patient_id = None
-
-if not active_patients.empty:
-    # --- NAME ALERT LOGIC ---
-    name_counts = active_patients['name'].value_counts()
-    duplicates = name_counts[name_counts > 1].index.tolist()
-
-    def flag_name(row):
-        name = row['name']
-        if name in duplicates: return f"🚨 {name} (NAME ALERT)"
-        return name
-
-    display_df = active_patients[['id', 'arrival_time', 'name', 'triage_level', 'status', 'assigned_md', 'assigned_nurse']].copy()
-    display_df['name'] = display_df.apply(flag_name, axis=1)
-
-    event = st.dataframe(
-        display_df,
-        column_config={
-            "id": st.column_config.NumberColumn("ID", width="small"),
-            "arrival_time": st.column_config.DatetimeColumn("Arrival", format="h:mm a"),
-            "name": st.column_config.TextColumn("Patient Name", help="🚨 indicates duplicate names."),
-            "triage_level": st.column_config.NumberColumn("KTAS", width="small"),
-            "status": st.column_config.SelectboxColumn("Status", options=["Waiting", "In-Treatment", "Admitted"]),
-            "assigned_md": st.column_config.SelectboxColumn("ED MD", options=md_list),
-            "assigned_nurse": st.column_config.SelectboxColumn("Nurse", options=nurse_list),
-        },
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row"
-    )
-
-    if len(event.selection.rows) > 0:
-        selected_index = event.selection.rows[0]
-        selected_patient_id = display_df.iloc[selected_index]['id']
-        st.session_state['selected_patient_id'] = int(selected_patient_id)
-
-else:
-    st.info("✅ No active patients in the system.")
-
-# ---------------------------------------------------------
-# DIALOGS (Popups)
-# ---------------------------------------------------------
-
-# A. TREATMENT POPUP
-@st.dialog("🏥 Initiate Treatment Protocol")
-def show_treatment_popup(patient_id, current_name):
-    st.write(f"Assigning Care Team for **{current_name}**")
-    
-    md_opts = [""] + database.get_available_staff("doctor")
-    nppa_opts = [""] + database.get_available_staff("nppa")
-    nurse_opts = [""] + database.get_available_staff("nurse")
-    
-    beds_df = database.get_available_beds_list()
-    bed_map = {f"{row['bed_label']} ({row['department']})": row['id'] for i, row in beds_df.iterrows()}
-    bed_options = ["No Bed Assignment"] + list(bed_map.keys())
-
-    with st.form("treatment_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**👨‍⚕️ Care Team**")
-            sel_md = st.selectbox("Attending Physician (MD)", md_opts)
-            sel_nppa = st.selectbox("Mid-Level (NP/PA)", nppa_opts)
-            sel_nurse = st.selectbox("Primary Nurse", nurse_opts)
-        with col2:
-            st.markdown("**📍 Location & Time**")
-            sel_bed_label = st.selectbox("Assign Room/Bed", bed_options)
-            start_time = st.time_input("Provider Start Time", value="now")
-            
-        initial_note = st.text_area("Initial Provider Note", placeholder="e.g. Patient seen, assessment started...")
-        
-        if st.form_submit_button("✅ Confirm & Start", type="primary"):
-            selected_bed_id = bed_map.get(sel_bed_label) if sel_bed_label != "No Bed Assignment" else None
-            success = database.start_treatment_detailed(
-                patient_id=patient_id, md=sel_md, nppa=sel_nppa, nurse=sel_nurse,
-                bed_id=selected_bed_id, notes=f" (Started at {start_time}) - {initial_note}"
-            )
-            if success:
-                st.toast("Treatment Protocol Initiated!", icon="👨‍⚕️")
-                time.sleep(1)
-                st.cache_data.clear() 
-                st.rerun()
-            else:
-                st.error("Database Error.")
-
-# B. TRANSFER / CHANGE ROOM POPUP (NEW)
-@st.dialog("⇄ Transfer Patient / Change Room")
-def show_transfer_popup(patient_id, current_name, current_loc):
-    st.write(f"Transferring **{current_name}**")
-    st.info(f"📍 Current Location: **{current_loc}**")
-    
-    # Available Beds
-    beds_df = database.get_available_beds_list()
-    bed_map = {f"{row['bed_label']} ({row['department']})": row['id'] for i, row in beds_df.iterrows()}
-    
-    with st.form("transfer_form"):
-        new_bed_label = st.selectbox("Select New Destination", list(bed_map.keys()))
-        reason = st.text_input("Reason for Transfer", placeholder="e.g. Isolation required, Upgrade to ICU...")
-        
-        if st.form_submit_button("⇄ Confirm Transfer"):
-            new_bed_id = bed_map[new_bed_label]
-            
-            # PASS THE REASON HERE
-            success = database.transfer_patient(patient_id, new_bed_id, reason) 
-            
-            if success:
-                st.success(f"Patient moved to {new_bed_label}")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.error("Transfer Failed.")
-
-# ---------------------------------------------------------
-# 4. ACTION BAR (Updated with Safe Discharge)
-# ---------------------------------------------------------
-st.markdown("---")
-
-# --- IMPROVED DISPOSITION DIALOG ---
-@st.dialog("🏥 Clinical Disposition (End Encounter)")
-def confirm_discharge(patient_id, name, bed_label):
-    st.write(f"Finalizing encounter for **{name}** in **{bed_label}**.")
-    
-    # 1. THE CRITICAL CHOICE
-    # This determines "Who was right" in the Nurse Audit
-    outcome = st.selectbox(
-        "Where is the patient going?",
-        [
-            "Home (Discharge)", 
-            "Admit to Ward (General Medicine)", 
-            "Admit to ICU (Critical Care)", 
-            "Transfer to Other Facility",
-            "Left Without Being Seen (LWBS)"
-        ]
-    )
-    
-    st.info("📝 An AI Clinical Synopsis will be auto-generated based on this outcome.")
-    
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button("✅ Finalize & Release Bed", type="primary", use_container_width=True):
-            with st.spinner(f"Processing {outcome}..."):
-                
-                # Map the user friendly string to database short-codes
-                db_disp = "Home"
-                if "Ward" in outcome: db_disp = "Admit"
-                elif "ICU" in outcome: db_disp = "ICU"
-                elif "Transfer" in outcome: db_disp = "Transfer"
-                elif "LWBS" in outcome: db_disp = "LWBS"
-                
-                success = database.discharge_patient_and_free_bed(patient_id, disposition=db_disp)
-                
-                if success:
-                    st.success(f"Patient moved to: {db_disp}")
-                    st.session_state.selected_patient_id = None
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("Database Error.")
-    
-    with col_no:
-        if st.button("❌ Cancel", use_container_width=True):
-            st.rerun()
-
-if selected_patient_id:
-    # Fetch latest data
-    p_data = df_patients[df_patients['id'] == selected_patient_id]
-    
-    if not p_data.empty:
-        p_row = p_data.iloc[0]
-        p_name = p_row['name']
-        p_status = p_row['status']
-        
-        # FEATURE: DISPLAY CURRENT ROOM
-        current_bed = database.get_patient_bed(selected_patient_id)
-        
-        st.markdown(f"### ⚙️ Patient: **{p_name}**")
-        
-        # Info Bar
-        c_info1, c_info2 = st.columns([1, 4])
-        c_info1.info(f"📍 **{current_bed}**")
-        c_info2.caption(f"Status: {p_status} | MRN: {selected_patient_id}")
-        
-        col_a, col_b, col_c, col_d = st.columns(4)
-        
-        # 1. CHART
-        with col_a:
-            if st.button("📂 Open Chart", type="primary", use_container_width=True):
-                st.switch_page("pages/4_Patient_Details.py")
-
-        # 2. WORKFLOW (Start/Discharge)
-        with col_b:
-            if p_status == "Waiting":
-                if st.button("👨‍⚕️ Start Treatment", use_container_width=True):
-                    show_treatment_popup(selected_patient_id, p_name)
-            else:
-                # UPDATED: Call the dialog instead of direct function
-                if st.button("✅ Discharge", use_container_width=True):
-                    confirm_discharge(selected_patient_id, p_name, current_bed)
-
-        # 3. TRANSFER
-        with col_c:
-            if st.button("⇄ Change Room", use_container_width=True):
-                show_transfer_popup(selected_patient_id, p_name, current_bed)
-
-        # 4. BED MANAGER
-        with col_d:
-            if st.button("🛏️ Bed Grid", use_container_width=True):
-                st.switch_page("pages/9_Bed_Manager.py")
-                
-    else:
-        # If patient was just discharged, this might hit if logic is fast
+# Fix Stale Selection
+if 'selected_patient_id' in st.session_state and st.session_state.selected_patient_id is not None:
+    valid_ids = active_patients['id'].tolist()
+    if st.session_state.selected_patient_id not in valid_ids:
         st.session_state.selected_patient_id = None
         st.rerun()
+
+# Map Patients to Departments
+beds_df = database.get_all_beds()
+patient_dept_map = dict(zip(beds_df['current_patient_id'], beds_df['department']))
+
+def get_patient_dept(pid):
+    return patient_dept_map.get(pid, "Emergency")
+
+active_patients['current_dept'] = active_patients['id'].apply(get_patient_dept)
+
+# Metrics Data
+total_beds = len(beds_df)
+er_beds_free = len(beds_df[(beds_df['department'] == 'Emergency') & (beds_df['status'] == 'Available')])
+md_list = [""] + database.get_available_staff("doctor")
+
+# ---------------------------------------------------------
+# 2. HEADER & KPI BOARD
+# ---------------------------------------------------------
+col_brand, col_clock, col_refresh = st.columns([6, 2, 1], vertical_alignment="bottom")
+with col_brand:
+    st.title("🏥 ED Live Track Board")
+    st.caption(f"System Status: ONLINE • {len(active_patients)} Active Encounters")
+with col_clock:
+    st.markdown(f"**{datetime.now().strftime('%d %b %Y')}**")
+    st.markdown(f"**{datetime.now().strftime('%H:%M')}**")
+with col_refresh:
+    if st.button("🔄 Refresh", use_container_width=True):
+        st.rerun()
+
+# KPI Metrics
+waiting_count = len(active_patients[active_patients['status'] == 'Waiting'])
+bedded_count = len(active_patients[active_patients['status'] != 'Waiting'])
+
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Waiting Room", waiting_count, "To Triage", delta_color="inverse")
+m2.metric("In Treatment", bedded_count, "Bedded")
+
+est_wait = int((waiting_count * 15) / max(1, len(md_list)-1))
+m3.metric("Est. Wait Time", f"{est_wait} min", "Avg", delta_color="inverse" if est_wait > 30 else "normal")
+
+bed_color = "normal" if er_beds_free > 3 else "inverse"
+m4.metric("ER Bed Capacity", f"{er_beds_free} Free", f"Total: {total_beds}", delta_color=bed_color)
+
+nedocs = min(200, (len(active_patients) / 20) * 100)
+m5.metric("Crowding Score", f"{int(nedocs)}", "Load Index", delta_color="inverse" if nedocs > 80 else "normal")
+
+st.write("---")
+
+# ---------------------------------------------------------
+# 3. THE TRACK BOARD (Context Filtered)
+# ---------------------------------------------------------
+# Layout: Toolbar Row (Title Left, Filter Right) - This fixes the alignment
+c_track_title, c_track_filter = st.columns([6, 2], vertical_alignment="bottom")
+
+with c_track_title:
+    st.subheader("📋 Patient Tracking")
+
+with c_track_filter:
+    # Filter is now clearly separated above the tabs
+    view_context = st.selectbox(
+        "Department View", 
+        ["Emergency", "ICU", "Ward", "All Operations"],
+        index=0,
+        help="Select 'Emergency' to see only ER patients. Transferring a patient to ICU removes them from this view."
+    )
+
+# FILTER LOGIC
+if view_context == "All Operations":
+    filtered_active = active_patients
 else:
-    st.caption("👆 **Select a patient** from the list above to view actions.")
+    if view_context == "Emergency":
+        filtered_active = active_patients[
+            (active_patients['current_dept'] == 'Emergency') | 
+            (active_patients['status'] == 'Waiting')
+        ]
+    else:
+        filtered_active = active_patients[active_patients['current_dept'] == view_context]
+
+# Split Data based on Filter
+waiting_queue = filtered_active[filtered_active['status'] == 'Waiting']
+in_progress = filtered_active[filtered_active['status'] != 'Waiting']
+
+# Render Tabs (Full Width)
+tab_wait, tab_active = st.tabs([f"⏳ Waiting ({len(waiting_queue)})", f"🛏️ Floor ({len(in_progress)})"])
+
+selected_id = None
+
+# --- TAB 1: WAITING ROOM ---
+with tab_wait:
+    if not waiting_queue.empty:
+        all_users = database.get_all_users()
+        name_map = dict(zip(all_users['username'], all_users['full_name']))
+        
+        def format_acuity(val):
+            if val == 1: return "🔴 Level 1 (Resus)"
+            if val == 2: return "🟠 Level 2 (Emergent)"
+            if val == 3: return "🟡 Level 3 (Urgent)"
+            return f"🟢 Level {val}"
+
+        display_q = waiting_queue[['id', 'arrival_time', 'name', 'triage_level', 'complaint', 'triage_nurse']].copy()
+        display_q['triage_nurse'] = display_q['triage_nurse'].map(name_map).fillna(display_q['triage_nurse'])
+        display_q['triage_level'] = display_q['triage_level'].apply(format_acuity)
+
+        event_q = st.dataframe(
+            display_q,
+            column_config={
+                "id": st.column_config.NumberColumn("MRN", width="small"),
+                "arrival_time": st.column_config.DatetimeColumn("Arrival", format="h:mm a"),
+                "triage_level": st.column_config.TextColumn("Acuity", width="medium"),
+                "complaint": "Chief Complaint",
+                "triage_nurse": "Triage Nurse"
+            },
+            use_container_width=True,
+            hide_index=True,
+            selection_mode="single-row",
+            on_select="rerun",
+            key="grid_waiting"
+        )
+        if len(event_q.selection.rows) > 0:
+            selected_id = display_q.iloc[event_q.selection.rows[0]]['id']
+    else:
+        st.success(f"✅ {view_context} Waiting Queue is Empty.")
+
+# --- TAB 2: ACTIVE FLOOR ---
+with tab_active:
+    if not in_progress.empty:
+        def get_loc(pid): return database.get_patient_bed(pid)
+        
+        display_a = in_progress[['id', 'name', 'triage_level', 'assigned_md', 'assigned_nurse', 'status']].copy()
+        display_a['Location'] = display_a['id'].apply(get_loc)
+        display_a = display_a[['Location', 'name', 'triage_level', 'assigned_md', 'assigned_nurse', 'status', 'id']]
+
+        event_a = st.dataframe(
+            display_a,
+            column_config={
+                "Location": st.column_config.TextColumn("Room/Bed", width="small"),
+                "id": st.column_config.NumberColumn("MRN", width="small"),
+                "triage_level": st.column_config.NumberColumn("KTAS", width="small"),
+                "assigned_md": "Provider",
+                "assigned_nurse": "Nurse",
+                "status": st.column_config.SelectboxColumn("Status", options=["In-Treatment", "Admitted"]),
+            },
+            use_container_width=True,
+            hide_index=True,
+            selection_mode="single-row",
+            on_select="rerun",
+            key="grid_active"
+        )
+        if len(event_a.selection.rows) > 0:
+            selected_id = display_a.iloc[event_a.selection.rows[0]]['id']
+    else:
+        st.info(f"No active patients on the {view_context} floor.")
+
+# ---------------------------------------------------------
+# 4. ACTION COMMAND STRIP
+# ---------------------------------------------------------
+@st.dialog("🏥 Initiate Encounter")
+def show_treatment_popup(patient_id, name):
+    st.write(f"Assigning Care Team for **{name}**")
     
+    d_mds = [""] + database.get_available_staff("doctor")
+    d_nurses = [""] + database.get_available_staff("nurse")
+    d_nppa = [""] + database.get_available_staff("nppa")
+    
+    beds = database.get_available_beds_list()
+    bed_map = {f"{r['bed_label']} ({r['department']})": r['id'] for i, r in beds.iterrows()}
+    
+    with st.form("tx_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            s_bed = st.selectbox("Assign Bed", ["No Bed"] + list(bed_map.keys()))
+            s_md = st.selectbox("Provider (MD)", d_mds)
+        with c2:
+            s_rn = st.selectbox("Primary Nurse", d_nurses)
+            s_app = st.selectbox("Mid-Level (APP)", d_nppa)
+        
+        note = st.text_area("HPI Note", placeholder="Initial assessment...")
+        
+        if st.form_submit_button("✅ Activate", type="primary"):
+            bid = bed_map.get(s_bed) if s_bed != "No Bed" else None
+            user = st.session_state.get('username', 'Unknown')
+            
+            success = database.start_treatment_detailed(
+                patient_id, s_md, s_app, s_rn, bid, note, 
+                author_username=user
+            )
+            if success:
+                st.success("Started")
+                st.session_state.selected_patient_id = None
+                time.sleep(0.5)
+                st.rerun()
+
+@st.dialog("⇄ Transfer Patient")
+def show_transfer_popup(patient_id, name, current_loc):
+    st.write(f"Transferring **{name}** from **{current_loc}**")
+    st.caption("Use this to move patients between beds (Internal or ICU Transfer).")
+    
+    beds = database.get_available_beds_list()
+    bed_map = {f"{r['bed_label']} ({r['department']})": r['id'] for i, r in beds.iterrows()}
+    
+    with st.form("transfer_form"):
+        dest = st.selectbox("Destination Bed", list(bed_map.keys()))
+        reason = st.text_input("Reason", placeholder="e.g. ICU Upgrade")
+        
+        if st.form_submit_button("Confirm Transfer"):
+            user = st.session_state.get('username', 'Unknown')
+            if database.transfer_patient(patient_id, bed_map[dest], reason, author_username=user):
+                st.success("Transfer Complete")
+                st.rerun()
+
+@st.dialog("✅ Final Disposition")
+def show_discharge_popup(patient_id, name):
+    st.write(f"End encounter for **{name}**?")
+    st.info("""
+    💡 **Workflow Tip:**
+    - To **Admit to a specific Room** (ICU/Ward), use the **'Transfer / Move'** button instead.
+    - Use this menu for **Discharge Home** or transfers outside this hospital.
+    """)
+    
+    dispo = st.selectbox("Decision", [
+        "Home (Discharge)", 
+        "Transfer to External Facility", 
+        "Left Without Being Seen (LWBS)",
+        "Admit (No Bed Assigned / Holding)"
+    ])
+    
+    if st.button("Finalize Encounter", type="primary"):
+        db_disp = "Home"
+        if "Admit" in dispo: db_disp = "Admit"
+        elif "Transfer" in dispo: db_disp = "Transfer"
+        elif "LWBS" in dispo: db_disp = "LWBS"
+        
+        with st.spinner("Processing..."):
+            if database.discharge_patient_and_free_bed(patient_id, db_disp):
+                st.success("Finalized")
+                st.session_state.selected_patient_id = None
+                time.sleep(1)
+                st.rerun()
+
+# ACTION STRIP RENDER
+if selected_id:
+    st.session_state.selected_patient_id = int(selected_id)
+    pt = df_patients[df_patients['id'] == selected_id].iloc[0]
+    curr_loc = database.get_patient_bed(selected_id)
+    
+    st.markdown(f"""
+    <div class="action-bar">
+        <h3 style="margin:0; color:#0d47a1;">⚙️ Selected: {pt['name']}</h3>
+        <p style="margin:0; color:#555;">MRN: {selected_id} &bull; Location: <b>{curr_loc}</b> &bull; Status: {pt['status']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.write("") 
+    
+    ac1, ac2, ac3, ac4 = st.columns(4)
+    
+    with ac1:
+        if st.button("📂 Open Chart", use_container_width=True, type="primary"):
+            st.switch_page("pages/4_Patient_Details.py")
+            
+    with ac2:
+        if pt['status'] == "Waiting":
+            if st.button("▶️ Start Treatment", use_container_width=True):
+                show_treatment_popup(selected_id, pt['name'])
+        else:
+            if st.button("⇄ Transfer / Move", use_container_width=True, help="Move to a different bed (ER or ICU)"):
+                show_transfer_popup(selected_id, pt['name'], curr_loc)
+
+    with ac3:
+         if st.button("🛏️ Bed Manager", use_container_width=True):
+             st.switch_page("pages/9_Bed_Manager.py")
+
+    with ac4:
+        if pt['status'] != "Waiting":
+            if st.button("✅ Disposition", use_container_width=True, type="secondary", help="End encounter (Admit/Home)"):
+                show_discharge_popup(selected_id, pt['name'])
+        else:
+             st.button("🚫 Cancel", use_container_width=True, disabled=True)
+
+else:
+    st.markdown("""
+    <div style="text-align:center; padding: 40px; color:#aaa; border: 2px dashed #ddd; border-radius:10px; margin-top:20px;">
+        👇 Select a patient from the <b>Waiting Queue</b> or <b>Active Floor</b> to view actions.
+    </div>
+    """, unsafe_allow_html=True)
+
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("👤 User: " + str(st.session_state.get('user_role', 'Staff').title()))
+role_display = st.session_state.get('user_role', 'Staff').upper()
+st.sidebar.caption(f"LOGGED IN AS: {role_display}")
 
-if st.sidebar.button("🚪 Log Out", type="secondary", use_container_width=True):
+if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     st.session_state.logged_in = False
-    st.session_state.user_role = None
-    st.session_state.selected_patient_id = None
     st.switch_page("app.py")

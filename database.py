@@ -455,19 +455,31 @@ def get_patient_bed(patient_id):
     finally:
         conn.close()
 
-def start_treatment_detailed(patient_id, md, nppa, nurse, bed_id, notes):
-    """Transitions patient to 'In-Treatment' with full team assignment."""
+def start_treatment_detailed(patient_id, md, nppa, nurse, bed_id, notes, author_username="System"):
+    """
+    Transitions patient to 'In-Treatment' and logs the Start Note with Author ID.
+    """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     try:
-        # --- FIX: FORCE CAST TO PYTHON INTEGER ---
-        # Pandas often sends numpy.int64 which SQLite dislikes
         pid = int(patient_id)
         
-        # Prepare the note text
-        new_note = f"\n\n[Treatment Started]: {notes}"
+        # 1. Get Author's Real Name
+        # We try to find the full name, otherwise fallback to the username
+        c.execute("SELECT full_name, role FROM users WHERE username = ?", (author_username,))
+        row = c.fetchone()
+        if row:
+            author_display = f"{row[0]} ({row[1].title()})"
+        else:
+            author_display = author_username
+
+        # 2. Format the Log Entry
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         
-        # 1. ATOMIC UPDATE
+        # This creates the timeline block
+        structured_note = f"\n\n{'='*30}\n[{timestamp}] 🚀 ENCOUNTER STARTED\n👤 Activated by: {author_display}\n📝 HPI/Note: {notes}\n{'='*30}"
+        
+        # 3. Update Patient Record
         c.execute('''
             UPDATE patients 
             SET status='In-Treatment', 
@@ -476,19 +488,9 @@ def start_treatment_detailed(patient_id, md, nppa, nurse, bed_id, notes):
                 assigned_nurse=?, 
                 nurse_notes = COALESCE(nurse_notes, '') || ?
             WHERE id=?
-        ''', (md, nppa, nurse, new_note, pid))
+        ''', (md, nppa, nurse, structured_note, pid))
         
-        # Check if any row was actually updated
-        if c.rowcount == 0:
-            print(f"⚠️ Warning: Update failed for ID {pid}.")
-            
-            # --- DEBUGGING: SHOW WHAT IDS ACTUALLY EXIST ---
-            c.execute("SELECT id FROM patients ORDER BY id DESC LIMIT 5")
-            recent_ids = [row[0] for row in c.fetchall()]
-            print(f"ℹ️ Debug: The most recent IDs in the DB are: {recent_ids}")
-            return False
-
-        # 2. Assign Bed (If selected)
+        # 4. Assign Bed (If selected)
         if bed_id:
             c.execute("UPDATE beds SET status='Occupied', current_patient_id=? WHERE id=?", (pid, bed_id))
         
@@ -560,42 +562,61 @@ def get_available_staff(role):
 
 # In database.py
 
-def transfer_patient(patient_id, new_bed_id, reason="Clinical Update"):
+# In database.py
+
+def transfer_patient(patient_id, new_bed_id, reason="Clinical Update", author_username="System"):
     """
-    Moves patient to new bed AND logs the event in the clinical notes.
+    Moves patient to new bed AND updates status based on Department (Smart Admission).
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     try:
         pid = int(patient_id)
         
-        # 1. Get Old Bed Info (For the log)
-        c.execute("SELECT bed_label FROM beds WHERE current_patient_id = ?", (pid,))
+        # 1. Get Author info
+        c.execute("SELECT full_name, role FROM users WHERE username = ?", (author_username,))
+        row_user = c.fetchone()
+        author_display = f"{row_user[0]} ({row_user[1].title()})" if row_user else author_username
+
+        # 2. Get Old Bed Info
+        c.execute("SELECT bed_label, department FROM beds WHERE current_patient_id = ?", (pid,))
         row = c.fetchone()
         old_bed_label = row[0] if row else "Waiting Room"
         
-        # 2. Get New Bed Info
-        c.execute("SELECT bed_label FROM beds WHERE id = ?", (new_bed_id,))
+        # 3. Get New Bed Info AND Department
+        c.execute("SELECT bed_label, department FROM beds WHERE id = ?", (new_bed_id,))
         row_new = c.fetchone()
-        new_bed_label = row_new[0] if row_new else "Unknown"
-
-        # 3. Mark Old Bed Dirty
-        c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE current_patient_id=?", (pid,))
+        if not row_new: return False
         
-        # 4. Occupy New Bed
+        new_bed_label = row_new[0]
+        new_dept = row_new[1] # e.g., 'ICU', 'Ward', 'Emergency'
+
+        # --- SMART STATUS LOGIC ---
+        # If moving to ICU or Ward, they are technically "Admitted"
+        if new_dept in ['ICU', 'Ward']:
+            new_status = 'Admitted'
+            # Also update final_disposition to reflect this
+            disposition_note = f"Admitted to {new_dept}"
+            c.execute("UPDATE patients SET final_disposition = ? WHERE id = ?", (disposition_note, pid))
+        else:
+            new_status = 'In-Treatment' # Stay active if in ER
+
+        # 4. Swap Beds
+        # Free old bed
+        c.execute("UPDATE beds SET status='Cleaning', current_patient_id=NULL WHERE current_patient_id=?", (pid,))
+        # Occupy new bed
         c.execute("UPDATE beds SET status='Occupied', current_patient_id=? WHERE id=?", (pid, new_bed_id))
         
-        # 5. Update Patient Status & LOG THE REASON
-        # We use COALESCE to append safely to existing notes
+        # 5. Update Patient Log & Status
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        log_entry = f"\n\n[{timestamp}] ⚠️ TRANSFER: {old_bed_label} -> {new_bed_label}\nReason: {reason}"
+        log_entry = f"\n\n[{timestamp}] ⚠️ TRANSFER: {old_bed_label} -> {new_bed_label} ({new_dept})\n👤 Authorized by: {author_display}\nReason: {reason}\nStatus Update: {new_status}"
         
         c.execute("""
             UPDATE patients 
-            SET status='In-Treatment', 
+            SET status=?, 
                 nurse_notes = COALESCE(nurse_notes, '') || ? 
             WHERE id=?
-        """, (log_entry, pid))
+        """, (new_status, log_entry, pid))
 
         conn.commit()
         return True
