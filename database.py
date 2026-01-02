@@ -334,30 +334,30 @@ def get_patient_by_id(patient_id):
     if row: return dict(row)
     return None
 
-# Update the function signature and SQL
-def update_full_patient_record(patient_id, name, age, gender, complaint, 
+# Updated to include DOB in the arguments and SQL query
+def update_full_patient_record(patient_id, name, dob, age, gender, complaint, 
                                arrival_mode, injury, mental, pain, nrs_pain,
                                sbp, dbp, hr, rr, bt, sat, 
                                triage_level, md, nppa, nurse, notes, 
-                               summary=None): # <-- NEW ARGUMENT
+                               summary=None): 
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # We use COALESCE to keep the old summary if the new one is None
+    # Added dob=? to the SET clause
     c.execute('''
         UPDATE patients 
-        SET name=?, age=?, gender=?, complaint=?, 
+        SET name=?, dob=?, age=?, gender=?, complaint=?, 
             arrival_mode=?, injury=?, mental=?, pain=?, nrs_pain=?, 
             sbp=?, dbp=?, hr=?, rr=?, bt=?, saturation=?, 
             triage_level=?, assigned_md=?, assigned_nppa=?, assigned_nurse=?, nurse_notes=?,
-            clinical_summary = COALESCE(?, clinical_summary)  -- <-- NEW UPDATE LOGIC
+            clinical_summary = COALESCE(?, clinical_summary)
         WHERE id=?
     ''', (
-        name, age, gender, complaint, 
+        name, dob, age, gender, complaint, 
         arrival_mode, injury, mental, pain, nrs_pain,
         sbp, dbp, hr, rr, bt, sat, 
         triage_level, md, nppa, nurse, notes, 
-        summary, # <-- Pass the summary here
+        summary, 
         patient_id
     ))
     conn.commit()

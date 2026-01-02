@@ -142,6 +142,40 @@ def show_transfer_dialog_ehr(patient_id, current_bed_label):
                 else:
                     st.error("Transfer Failed.")
 
+@st.dialog("✅ Final Disposition")
+def show_discharge_dialog(patient_id, name):
+    st.write(f"End encounter for **{name}**?")
+    st.info("""
+    💡 **Workflow Tip:**
+    - To **Admit to a specific Room** (ICU/Ward), use the **'Transfer'** button instead.
+    - Use this menu for **Discharge Home** or transfers outside this hospital.
+    """)
+    
+    dispo = st.selectbox("Decision", [
+        "Home (Discharge)", 
+        "Transfer to External Facility", 
+        "Left Without Being Seen (LWBS)",
+        "Admit (No Bed Assigned / Holding)"
+    ])
+    
+    if st.button("Finalize Encounter", type="primary", use_container_width=True):
+        # --- EXACT MAPPING LOGIC FROM DASHBOARD ---
+        db_disp = "Home"
+        if "Admit" in dispo: db_disp = "Admit"
+        elif "Transfer" in dispo: db_disp = "Transfer"
+        elif "LWBS" in dispo: db_disp = "LWBS"
+        
+        with st.spinner("Processing Discharge..."):
+            # Execute Database Logic
+            success = database.discharge_patient_and_free_bed(patient_id, db_disp)
+            
+            if success:
+                st.success(f"Encounter Finalized: {db_disp}")
+                time.sleep(1)
+                st.switch_page("pages/1_Dashboard.py")
+            else:
+                st.error("Database Error: Could not discharge.")
+
 # ---------------------------------------------------------
 # AI HELPERS
 # ---------------------------------------------------------
@@ -287,7 +321,8 @@ with t1:
         st.subheader("1. Demographics")
         c1, c2, c3, c4 = st.columns(4)
         u_name = c1.text_input("Name", value=patient['name'])
-        c2.text_input("DOB", value=patient.get('dob', ''), disabled=True) 
+        # CHANGED: Capture the variable and remove disabled=True
+        u_dob = c2.text_input("DOB", value=patient.get('dob', '')) 
         u_age = c3.number_input("Age", 0, 120, patient['age'])
         u_gender = c4.selectbox("Gender", ["Male", "Female"], index=0 if patient['gender'] == "Male" else 1)
         
@@ -327,7 +362,7 @@ with t1:
             db_pain = REV_PAIN[u_pain_str]
             
             database.update_full_patient_record(
-                pid, u_name, u_age, u_gender, u_complaint,
+                pid, u_name, u_dob, u_age, u_gender, u_complaint, 
                 db_arrival, db_injury, db_mental, db_pain, u_nrs,
                 u_sbp, u_dbp, u_hr, u_rr, u_bt, u_sat,
                 u_level, patient['assigned_md'], patient['assigned_nppa'], patient['assigned_nurse'], patient['nurse_notes']
@@ -352,34 +387,20 @@ with t2:
             
             with c_top2:
                 # ---------------------------------------------------------
-                # NEW: LOGIC TO HANDLE BOTH SUMMARY TYPES
+                # UPDATED LOGIC: ONLY KEEP THE "FULL LETTER" GENERATOR
                 # ---------------------------------------------------------
                 if n_type == "Discharge Summary":
-                    # Option A: Full Document (For the Text Area / PDF)
+                    # Keep this: It generates the long text for the editor/PDF
                     if st.button("✨ Write Full Letter", help="Generates long-form Discharge Letter"):
                         with st.spinner("Writing Letter..."):
                             logs = patient['nurse_notes'] if patient['nurse_notes'] else ""
-                            summary = generate_ai_summary(patient, logs) # Your OLD function (Long)
+                            # This generates the LONG version for printing
+                            summary = generate_ai_summary(patient, logs) 
                             st.session_state.current_note = summary
                             st.rerun()
-                            
-                    # Option B: Database Abstract (For the History Column)
-                    if st.button("📌 Update History Abstract", help="Generates short paragraph for History Tab"):
-                        with st.spinner("Summarizing for DB..."):
-                            logs = patient['nurse_notes'] if patient['nurse_notes'] else ""
-                            # 1. Generate the Short Script
-                            short_script = generate_illness_script(patient, logs) # Your NEW function (Short)
-                            
-                            # 2. Save DIRECTLY to database (don't put in text area)
-                            database.update_full_patient_record(
-                                pid, patient['name'], patient['age'], patient['gender'], patient['complaint'],
-                                patient['arrival_mode'], patient['injury'], patient['mental'], patient['pain'], patient['nrs_pain'],
-                                patient['sbp'], patient['dbp'], patient['hr'], patient['rr'], patient['bt'], patient['saturation'],
-                                patient['triage_level'], patient['assigned_md'], patient['assigned_nppa'], patient['assigned_nurse'], 
-                                patient['nurse_notes'], # Keep notes same
-                                short_script # <--- SAVE TO clinical_summary COLUMN
-                            )
-                            st.toast("✅ History Abstract Updated!", icon="📌")
+                    
+                    # REMOVED: "Update History Abstract" button 
+                    # (Because database.discharge_patient_and_free_bed does this automatically now)
                             
                 elif n_type == "Progress Note":
                     if st.button("💡 Care Plan", help="Suggest orders"):
@@ -477,8 +498,8 @@ with t2:
 
                 # 4. Render Dropdowns (Fixed variable names)
                 u_md = st.selectbox("MD", active_md_opts, index=get_index(active_md_opts, current_md))
-                u_nppa = st.selectbox("APP", active_nppa_opts, index=get_index(active_nppa_opts, current_nppa))
-                u_nurse = st.selectbox("RN", active_nurse_opts, index=get_index(active_nurse_opts, current_nurse))
+                u_nppa = st.selectbox("Mid Level", active_nppa_opts, index=get_index(active_nppa_opts, current_nppa))
+                u_nurse = st.selectbox("Nurse", active_nurse_opts, index=get_index(active_nurse_opts, current_nurse))
                 
                 if st.form_submit_button("Save Team"):
                     # Assuming you have a function to update just the team, 
@@ -496,10 +517,23 @@ with t2:
                     st.rerun()
 
 # === TAB 3: AI AUDIT TRAIL ===
+# === TAB 3: AI AUDIT TRAIL ===
 with t3:
     st.markdown("### 🤖 Clinical Decision Support Audit")
     st.info("This section preserves the AI analysis generated at the moment of triage.")
     
+    # --- NEW: Name Mapping Logic ---
+    # Fetch all users to map 'admin' -> 'System Admin'
+    users_df = database.get_all_users()
+    # Create dictionary: {'admin': 'System Admin', 'nurse': 'Nurse Joy', ...}
+    user_map = dict(zip(users_df['username'], users_df['full_name']))
+    
+    # Get the raw username from the patient record
+    raw_nurse_user = patient.get('triage_nurse', 'Unknown')
+    # Look it up (Fallback to username if full name not found)
+    display_nurse = user_map.get(raw_nurse_user, raw_nurse_user)
+    # -------------------------------
+
     ai_lvl = patient['ai_level']
     final_lvl = patient['triage_level']
     is_match = (ai_lvl == final_lvl)
@@ -516,14 +550,15 @@ with t3:
             
         st.divider()
         st.metric("Model Confidence", f"{patient['confidence']:.1f}%")
-        st.write(f"**Triage Nurse:** {patient['triage_nurse']}")
+        
+        # CHANGED: Now displays the Full Name
+        st.write(f"**Triage Nurse:** {display_nurse}")
         
     with c_audit_2:
         st.markdown("#### 🧠 Model Reasoning Snapshot")
         explanation_text = patient['ai_explanation'] if patient['ai_explanation'] else "No explanation data available."
         st.text_area("Clinical Justification (Read-Only)", value=explanation_text, height=300, disabled=True)
-
-# === TAB 4: HISTORY (TIMELINE VIEW) ===
+        
 # === TAB 4: HISTORY (TIMELINE VIEW) ===
 with t4:
     st.markdown(f"### 🗂️ Medical Timeline: {patient['name']}")
@@ -541,8 +576,8 @@ with t4:
             # Check if this row is the one we are currently looking at
             is_current = (row['id'] == int(pid))
             
-            # Border style: Blue highlight if current, Gray if past
-            b_style = "border: 2px solid #2196f3;" if is_current else "border: 1px solid #ddd;"
+            # Add a subtle glowing shadow for the active patient card
+            b_style = "border: 2px solid #2196f3; box-shadow: 0 0 10px rgba(33, 150, 243, 0.2);" if is_current else "border: 1px solid #ddd;"
             bg_style = "background-color: #f8fbff;" if is_current else ""
             
             # Custom Container using HTML/CSS for distinction
@@ -619,11 +654,14 @@ with ac1:
         st.switch_page("pages/1_Dashboard.py")
 
 with ac2:
-    # PDF Logic (Keep existing)
     pdf_bytes = create_pdf(patient, bed_loc)
-    b64 = base64.b64encode(pdf_bytes).decode('latin-1')
-    href = f'<a href="data:application/octet-stream;base64,{b64}" download="Medical_Record_{pid}.pdf" style="text-decoration:none; width:100%; display:inline-block; text-align:center; background-color:#555; color:white; padding:10px; border-radius:5px;">📄 Download PDF</a>'
-    st.markdown(href, unsafe_allow_html=True)
+    st.download_button(
+        label="📄 Download PDF",
+        data=pdf_bytes,
+        file_name=f"Medical_Record_{patient['id']}_{time.strftime('%Y%m%d')}.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
 
 with ac3:
     # NEW TRANSFER BUTTON
@@ -631,12 +669,10 @@ with ac3:
         show_transfer_dialog_ehr(pid, bed_loc)
 
 with ac4:
-    # Discharge Logic (Keep existing)
+    # Check if active
     if patient['status'] != "Discharged":
-        if st.button("✅ Discharge", type="primary", use_container_width=True):
-            database.discharge_patient_and_free_bed(pid)
-            st.success("Discharged.")
-            time.sleep(1)
-            st.switch_page("pages/1_Dashboard.py")
+        if st.button("✅ Disposition", type="primary", use_container_width=True, help="End encounter (Admit/Home)"):
+            # Pass ID and Name exactly like the Dashboard does
+            show_discharge_dialog(pid, patient['name'])
     else:
-        st.info("Discharged")
+        st.button("✅ Discharged", disabled=True, use_container_width=True)
