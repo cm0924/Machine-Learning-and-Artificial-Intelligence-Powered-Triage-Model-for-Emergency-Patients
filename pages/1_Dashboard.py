@@ -62,10 +62,22 @@ md_list = [""] + database.get_available_staff("doctor")
 # ---------------------------------------------------------
 # 2. HEADER & KPI BOARD
 # ---------------------------------------------------------
+
+# --- KPI METRICS CALCULATION ---
+# 1. Waiting: Status is 'Waiting'
+waiting_count = len(active_patients[active_patients['status'] == 'Waiting'])
+
+# 2. In Treatment: STRICTLY 'In-Treatment' (Excludes ICU/Ward 'Admitted')
+in_treatment_count = len(active_patients[active_patients['status'] == 'In-Treatment'])
+
+# 3. Total ER Load (Waiting + In Treatment)
+er_total_load = waiting_count + in_treatment_count
+
 col_brand, col_clock, col_refresh = st.columns([6, 2, 1], vertical_alignment="bottom")
 with col_brand:
     st.title("🏥 ED Live Track Board")
-    st.caption(f"System Status: ONLINE • {len(active_patients)} Active Encounters")
+    # UPDATED: Uses er_total_load instead of all active patients
+    st.caption(f"System Status: ONLINE • {er_total_load} Active ER Encounters") 
 with col_clock:
     st.markdown(f"**{datetime.now().strftime('%d %b %Y')}**")
     st.markdown(f"**{datetime.now().strftime('%H:%M')}**")
@@ -73,13 +85,11 @@ with col_refresh:
     if st.button("🔄 Refresh", use_container_width=True):
         st.rerun()
 
-# KPI Metrics
-waiting_count = len(active_patients[active_patients['status'] == 'Waiting'])
-bedded_count = len(active_patients[active_patients['status'] != 'Waiting'])
-
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Waiting Room", waiting_count, "To Triage", delta_color="inverse")
-m2.metric("In Treatment", bedded_count, "Bedded")
+
+# UPDATED: Uses in_treatment_count
+m2.metric("In Treatment", in_treatment_count, "ER Beds Active") 
 
 est_wait = int((waiting_count * 15) / max(1, len(md_list)-1))
 m3.metric("Est. Wait Time", f"{est_wait} min", "Avg", delta_color="inverse" if est_wait > 30 else "normal")
@@ -87,7 +97,7 @@ m3.metric("Est. Wait Time", f"{est_wait} min", "Avg", delta_color="inverse" if e
 bed_color = "normal" if er_beds_free > 3 else "inverse"
 m4.metric("ER Bed Capacity", f"{er_beds_free} Free", f"Total: {total_beds}", delta_color=bed_color)
 
-nedocs = min(200, (len(active_patients) / 20) * 100)
+nedocs = min(200, (er_total_load / 20) * 100) # Updated calculation base
 m5.metric("Crowding Score", f"{int(nedocs)}", "Load Index", delta_color="inverse" if nedocs > 80 else "normal")
 
 st.write("---")
