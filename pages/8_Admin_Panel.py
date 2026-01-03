@@ -2,137 +2,201 @@
 import streamlit as st
 import database
 import pandas as pd
+import time
 
 st.set_page_config(page_title="Admin Panel", page_icon="🔐", layout="wide")
 
+# --- CUSTOM CSS ---
+st.markdown("""
+<style>
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] { height: 50px; padding-top: 10px; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- SECURITY CHECK ---
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
-    st.warning("Please log in first.")
+    st.warning("⚠️ Please log in first.")
+    time.sleep(1)
+    st.switch_page("app.py")
     st.stop()
 
 if st.session_state.user_role != "admin":
-    st.error("⛔ ACCESS DENIED: Only Admins can view this page.")
+    st.error("⛔ ACCESS DENIED: Only System Admins can view this page.")
     st.stop()
 
-st.title("🔐 Staff Management")
+st.title("🔐 System Administration")
+st.caption(f"Logged in as: {st.session_state.username}")
 
 # Fetch latest data
 users_df = database.get_all_users()
 
 # --- TABS FOR CRUD OPERATIONS ---
-tab1, tab2, tab3 = st.tabs(["📝 View & Edit", "➕ Add New Staff", "❌ Delete Staff"])
+t1, t2, t3, t4 = st.tabs(["📝 Directory & Edit", "➕ Register Staff", "📸 Face ID Setup", "❌ Remove Staff"])
 
 # =========================================================
 # TAB 1: VIEW & UPDATE (The Editable Table)
 # =========================================================
-with tab1:
-    st.markdown("### Staff Directory")
-    st.info("💡 **Tip:** Double-click on any cell below to edit it. Changes save immediately.")
+with t1:
+    st.subheader("Staff Directory")
+    
+    # --- FILTERS & SORTING ---
+    with st.container(border=True):
+        c_search, c_filter = st.columns([2, 1])
+        
+        with c_search:
+            search_query = st.text_input("🔍 Search Staff", placeholder="Name or Username...")
+            
+        with c_filter:
+            all_roles = list(users_df['role'].unique())
+            role_filter = st.multiselect("Filter by Role", options=all_roles, default=all_roles, placeholder="Select roles...")
 
+    # --- APPLY FILTERS ---
+    filtered_df = users_df.copy()
+    
+    # 1. Role Filter
+    if role_filter:
+        filtered_df = filtered_df[filtered_df['role'].isin(role_filter)]
+        
+    # 2. Text Search
+    if search_query:
+        mask = (
+            filtered_df['full_name'].str.contains(search_query, case=False) | 
+            filtered_df['username'].str.contains(search_query, case=False)
+        )
+        filtered_df = filtered_df[mask]
+
+    # 3. Default Sort (By Role then Name)
+    filtered_df = filtered_df.sort_values(by=['role', 'full_name'])
+
+    st.info(f"Showing **{len(filtered_df)}** records. Double-click any cell to edit.")
+
+    # --- EDITOR ---
     # We use data_editor for inline editing
-    # We hide the index, but we need the 'id' to map changes back to the DB
     edited_df = st.data_editor(
-        users_df,
+        filtered_df,
         column_config={
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
             "full_name": "Full Name",
             "username": "Username",
             "password": "Password", 
-            "role": st.column_config.SelectboxColumn("Role", options=["admin", "doctor", "nurse"])
+            "role": st.column_config.SelectboxColumn("Role", options=["admin", "doctor", "nurse", "nppa"])
         },
-        disabled=["id"], # ID cannot be changed
+        disabled=["id"], 
         hide_index=True,
         use_container_width=True,
         key="editor"
     )
 
-    # CHECK FOR CHANGES
-    # Streamlit doesn't automatically sync data_editor back to SQL. 
-    # We have to compare the old DF vs new DF or use a button to save.
-    # Here is a "Save Changes" button approach for safety.
-    
-    if st.button("💾 Save Changes to Database", type="primary"):
-        # Iterate through the edited dataframe rows
-        try:
-            for index, row in edited_df.iterrows():
-                # We update every row (or you could optimize to only update changed ones)
-                database.update_user(
-                    user_id=row['id'],
-                    full_name=row['full_name'],
-                    username=row['username'],
-                    password=row['password'],
-                    role=row['role']
-                )
-            st.success("✅ Database updated successfully!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error updating database: {e}")
+    col_save, col_spacer = st.columns([1, 4])
+    with col_save:
+        if st.button("💾 Save Changes", type="primary", use_container_width=True):
+            try:
+                # We iterate through the EDITED dataframe (which contains the ID)
+                # This works even if filtered, because the ID remains correct.
+                for index, row in edited_df.iterrows():
+                    database.update_user(
+                        user_id=row['id'],
+                        full_name=row['full_name'],
+                        username=row['username'],
+                        password=row['password'],
+                        role=row['role']
+                    )
+                st.toast("✅ Database updated successfully!", icon="💾")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error updating database: {e}")
 
 # =========================================================
 # TAB 2: CREATE (Add New User)
 # =========================================================
-with tab2:
-    st.markdown("### Register New Staff")
+with t2:
+    st.subheader("Register New Staff Member")
     
-    with st.form("add_user_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            new_name = st.text_input("Full Name")
-            new_role = st.selectbox("Role", ["doctor", "nurse", "admin"])
-        with col2:
-            new_user = st.text_input("Username")
-            new_pass = st.text_input("Password", type="password")
+    with st.container(border=True):
+        with st.form("add_user_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                new_name = st.text_input("Full Name (e.g., Dr. Strange)")
+                new_role = st.selectbox("Assign Role", ["doctor", "nurse", "nppa"])
+            with c2:
+                new_user = st.text_input("Username")
+                new_pass = st.text_input("Default Password", type="password")
+                
+            st.markdown("---")
+            submitted = st.form_submit_button("➕ Create User", type="primary", use_container_width=True)
             
-        submitted = st.form_submit_button("➕ Create User")
-        
-        if submitted:
-            if new_name and new_user and new_pass:
-                success = database.add_user(new_name, new_user, new_pass, new_role)
-                if success:
-                    st.success(f"✅ User {new_user} created!")
-                    st.rerun()
+            if submitted:
+                if new_name and new_user and new_pass:
+                    # Database Call
+                    success = database.add_user(new_name, new_user, new_pass, new_role)
+                    if success:
+                        st.success(f"✅ User '{new_user}' created successfully!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("❌ Username already exists. Please choose another.")
                 else:
-                    st.error("❌ Username already exists. Please choose another.")
+                    st.warning("⚠️ Please fill in all fields.")
+
+# =========================================================
+# TAB 3: FACE ID (Clean Setup)
+# =========================================================
+with t3:
+    st.subheader("📸 Biometric Enrollment")
+    st.caption("Enroll staff faces for touchless login.")
+    
+    col_cam, col_sel = st.columns([1, 1])
+    
+    with col_sel:
+        # Create a dropdown map of users sorted alphabetically
+        # Using a sorted list for better UX
+        sorted_users = users_df.sort_values(by="full_name")
+        user_map = {f"{row['full_name']} ({row['role']})": row['id'] for i, row in sorted_users.iterrows()}
+        
+        target_user_label = st.selectbox("Select Staff Member to Enroll", list(user_map.keys()))
+        target_user_id = user_map[target_user_label]
+        
+        st.info("1. Select the staff member above.\n2. Look at the camera.\n3. Click 'Take Photo'.\n4. Click 'Save Face ID'.")
+
+    with col_cam:
+        img_buffer = st.camera_input("Capture Face")
+
+        if img_buffer is not None:
+            if st.button("💾 Save Face ID to Database", type="primary", use_container_width=True):
+                with st.spinner("Processing biometric data..."):
+                    success, msg = database.register_face(target_user_id, img_buffer)
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+
+# =========================================================
+# TAB 4: DELETE
+# =========================================================
+with t4:
+    st.subheader("Remove Access")
+    
+    with st.container(border=True):
+        st.warning("⚠️ DANGER ZONE: This action cannot be undone.")
+        
+        # Create list for dropdown sorted by name
+        sorted_users = users_df.sort_values(by="full_name")
+        user_options = {f"{row['id']}: {row['full_name']} ({row['role']})": row['id'] for index, row in sorted_users.iterrows()}
+        
+        selected_option = st.selectbox("Select User to Remove", options=list(user_options.keys()))
+        
+        if st.button("🗑️ Permanently Delete User", type="primary"):
+            user_id_to_delete = user_options[selected_option]
+            
+            # Prevent Admin Suicide (Deleting the logged-in admin)
+            current_admin_id = users_df[users_df['username'] == st.session_state.username]['id'].values[0]
+            
+            if user_id_to_delete == current_admin_id:
+                st.error("⛔ You cannot delete your own Admin account.")
             else:
-                st.warning("⚠️ Please fill in all fields.")
-
-# =========================================================
-# TAB 3: DELETE
-# =========================================================
-with tab3:
-    st.markdown("### Remove Staff")
-    st.warning("⚠️ This action cannot be undone.")
-    
-    # Create a list of "ID: Name (Role)" for the dropdown
-    user_options = {f"{row['id']}: {row['full_name']} ({row['role']})": row['id'] for index, row in users_df.iterrows()}
-    
-    selected_option = st.selectbox("Select User to Remove", options=list(user_options.keys()))
-    
-    if st.button("🗑️ Delete User", type="primary"):
-        user_id_to_delete = user_options[selected_option]
-        
-        # Prevent deleting yourself (optional safety)
-        # Note: In a real app, you'd check session_state username against the DB
-        
-        database.delete_user(user_id_to_delete)
-        st.success("User deleted.")
-        st.rerun()
-
-st.subheader("📸 Face ID Enrollment")
-
-# Select User to Enroll
-users = database.get_all_users()
-user_map = {f"{row['full_name']} ({row['role']})": row['id'] for i, row in users.iterrows()}
-target_user = st.selectbox("Select Staff Member", list(user_map.keys()))
-
-# Camera Input
-img_file = st.camera_input("Take a clear photo for enrollment")
-
-if img_file is not None:
-    if st.button("💾 Save Face ID"):
-        user_id = user_map[target_user]
-        success, msg = database.register_face(user_id, img_file)
-        if success:
-            st.success(msg)
-        else:
-            st.error(msg)        
+                database.delete_user(user_id_to_delete)
+                st.toast("User deleted.", icon="🗑️")
+                time.sleep(1)
+                st.rerun()
