@@ -112,36 +112,36 @@ def init_db():
             c.execute("INSERT INTO users (full_name, username, password, role) VALUES (?, ?, ?, ?)", 
                       (name, user, pwd, role))
 
-        # B. MOCK PATIENTS
-        print("Generating mock patients...")
-        nurse_usernames = ["nurse", "nora", "sarah"]
+        # # B. MOCK PATIENTS
+        # print("Generating mock patients...")
+        # nurse_usernames = ["nurse", "nora", "sarah"]
         
-        for i in range(50):
-            nurse = random.choice(nurse_usernames)
-            ai_lvl = random.choices([1, 2, 3, 4, 5], weights=[5, 15, 40, 30, 10])[0]
+        # for i in range(50):
+        #     nurse = random.choice(nurse_usernames)
+        #     ai_lvl = random.choices([1, 2, 3, 4, 5], weights=[5, 15, 40, 30, 10])[0]
             
-            # Logic: 80% Agreement
-            if random.random() < 0.80: final_lvl = ai_lvl
-            else: final_lvl = max(1, min(5, ai_lvl + random.choice([-1, 1])))
+        #     # Logic: 80% Agreement
+        #     if random.random() < 0.80: final_lvl = ai_lvl
+        #     else: final_lvl = max(1, min(5, ai_lvl + random.choice([-1, 1])))
             
-            disp = 'Discharge' if final_lvl > 3 else 'Admit'
+        #     disp = 'Discharge' if final_lvl > 3 else 'Admit'
             
-            # Generate Random DOB based on Age
-            age = random.randint(18, 90)
-            birth_year = datetime.now().year - age
-            dob_mock = f"{birth_year}-{random.randint(1,12):02d}-{random.randint(1,28):02d}"
+        #     # Generate Random DOB based on Age
+        #     age = random.randint(18, 90)
+        #     birth_year = datetime.now().year - age
+        #     dob_mock = f"{birth_year}-{random.randint(1,12):02d}-{random.randint(1,28):02d}"
 
-            c.execute('''
-                INSERT INTO patients (name, dob, age, gender, complaint, triage_level, ai_level, 
-                confidence, triage_nurse, final_disposition, arrival_time, status, 
-                arrival_mode, injury, mental, pain, nrs_pain)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                f"Patient {i+100}", dob_mock, age, "Male", "Mock Complaint", 
-                final_lvl, ai_lvl, 88.5, nurse, disp, 
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Discharged",
-                2, 1, 1, 0, 0 # Default safe values for mock data
-            ))
+        #     c.execute('''
+        #         INSERT INTO patients (name, dob, age, gender, complaint, triage_level, ai_level, 
+        #         confidence, triage_nurse, final_disposition, arrival_time, status, 
+        #         arrival_mode, injury, mental, pain, nrs_pain)
+        #         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        #     ''', (
+        #         f"Patient {i+100}", dob_mock, age, "Male", "Mock Complaint", 
+        #         final_lvl, ai_lvl, 88.5, nurse, disp, 
+        #         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Discharged",
+        #         2, 1, 1, 0, 0 # Default safe values for mock data
+        #     ))
 
     # C. BEDS (100 BEDS LOGIC)
     c.execute("SELECT count(*) FROM beds")
@@ -161,6 +161,56 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+# --- DELETION FUNCTIONS ---
+
+def delete_patient(patient_id):
+    """
+    Deletes a single patient and ensures any bed they occupy is freed.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        pid = int(patient_id)
+        
+        # 1. Free the bed if they are currently occupying one
+        c.execute("UPDATE beds SET status='Available', current_patient_id=NULL WHERE current_patient_id=?", (pid,))
+        
+        # 2. Delete the patient record
+        c.execute("DELETE FROM patients WHERE id=?", (pid,))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting patient: {e}")
+        return False
+    finally:
+        conn.close()
+
+def delete_all_patients():
+    """
+    DANGER: Wipes the entire patient database and resets all beds.
+    Used for 'Hard Reset'.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        # 1. Reset ALL Beds to Available
+        c.execute("UPDATE beds SET status='Available', current_patient_id=NULL")
+        
+        # 2. Delete ALL Patients
+        c.execute("DELETE FROM patients")
+        
+        # 3. Optional: Reset the Auto-Increment ID counter to 1
+        c.execute("DELETE FROM sqlite_sequence WHERE name='patients'")
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting all patients: {e}")
+        return False
+    finally:
+        conn.close()    
 
 # --- LOGIN & USER MANAGEMENT ---
 # 2. FUNCTION TO REGISTER FACE
@@ -516,17 +566,16 @@ def get_available_staff(role):
     Returns a list of staff members who are NOT currently assigned 
     to any active patient.
     
-    Logic: Total Staff - Staff assigned to Active Patients = Available Staff
+    Logic: Staff is BUSY if patient is 'In-Treatment' or 'Waiting'.
+    Staff is FREE if patient is 'Discharged' OR 'Admitted' (moved to Ward/ICU).
     """
     conn = sqlite3.connect(DB_NAME)
     
     # 1. Get ALL staff for this role
-    # We use 'set' for faster mathematical subtraction
     df_all = pd.read_sql("SELECT full_name FROM users WHERE role = ?", conn, params=(role,))
     all_staff = set(df_all['full_name'].dropna().tolist())
     
     # 2. Get BUSY staff
-    # We look at patients who are NOT discharged.
     column_map = {
         "doctor": "assigned_md",
         "nurse": "assigned_nurse",
@@ -537,11 +586,13 @@ def get_available_staff(role):
     busy_staff = set()
 
     if target_col:
-        # Query: Find names in the assigned column where status is NOT Discharged
+        # UPDATED QUERY:
+        # We check for patients who are NOT Discharged AND NOT Admitted.
+        # If they are 'Admitted', they have left the ER, so the staff is free.
         query = f"""
             SELECT DISTINCT {target_col} 
             FROM patients 
-            WHERE status != 'Discharged' 
+            WHERE status NOT IN ('Discharged', 'Admitted') 
             AND {target_col} IS NOT NULL 
             AND {target_col} != ''
         """
@@ -555,14 +606,6 @@ def get_available_staff(role):
     available_staff.sort()
     
     return available_staff
-
-# ---------------------------------------------------------
-# ADD THESE FUNCTIONS TO database.py
-# ---------------------------------------------------------
-
-# In database.py
-
-# In database.py
 
 def transfer_patient(patient_id, new_bed_id, reason="Clinical Update", author_username="System"):
     """
@@ -706,11 +749,9 @@ def get_staff_status_report():
     staff_df = pd.read_sql("SELECT full_name, role, username FROM users", conn)
     
     # 2. Get All Patients (Active & Discharged) for Workload Stats
-    # We count how many times a name appears in the assigned columns
     p_df = pd.read_sql("SELECT assigned_md, assigned_nppa, assigned_nurse, status, name, id FROM patients", conn)
     
     # 3. Get Active Bed Mapping (For Location)
-    # Join beds to find active patient locations
     b_df = pd.read_sql("SELECT current_patient_id, bed_label FROM beds WHERE current_patient_id IS NOT NULL", conn)
     
     conn.close()
@@ -718,15 +759,15 @@ def get_staff_status_report():
     # --- PROCESSING LOGIC ---
     status_map = {}
     location_map = {}
-    workload_map = {}
     
-    # A. Calculate Workload (Count total assignments)
-    # We concat all staff columns to count occurrences easily
+    # A. Calculate Workload (Count total assignments regardless of status)
     all_assignments = pd.concat([p_df['assigned_md'], p_df['assigned_nppa'], p_df['assigned_nurse']])
     counts = all_assignments.value_counts().to_dict()
     
-    # B. Calculate Active Status (Only non-discharged)
-    active_patients = p_df[p_df['status'] != 'Discharged']
+    # B. Calculate Active Status
+    # UPDATED LOGIC: 
+    # A patient is only "Active" (making staff busy) if they are NOT Discharged AND NOT Admitted.
+    active_patients = p_df[~p_df['status'].isin(['Discharged', 'Admitted'])]
     
     # Create a map of Patient ID -> Bed Label
     bed_map = dict(zip(b_df['current_patient_id'], b_df['bed_label']))
