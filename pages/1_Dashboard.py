@@ -324,7 +324,7 @@ if selected_id:
 
     with ac3:
          if st.button("🛏️ Bed Manager", use_container_width=True):
-             st.switch_page("pages/9_Bed_Manager.py")
+             st.switch_page("pages/8_Bed_Manager.py")
 
     with ac4:
         if pt['status'] != "Waiting":
