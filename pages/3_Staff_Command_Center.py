@@ -132,3 +132,15 @@ with t1: render_grid("doctor")
 with t2: render_grid("nppa")
 with t3: render_grid("nurse")
 with t4: render_grid("admin")
+
+st.sidebar.markdown("---")
+# Use get() with a default value just in case
+name_display = st.session_state.get('full_name', 'Staff Member')
+st.sidebar.caption(f"LOGGED IN AS: {name_display}")
+
+if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+    st.session_state.full_name = None # Clear it
+    st.rerun()

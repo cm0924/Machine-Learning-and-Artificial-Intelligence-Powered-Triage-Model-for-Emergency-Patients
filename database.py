@@ -286,7 +286,7 @@ def login_with_face(image_buffer):
                 results = face_recognition.compare_faces([known_encoding], unknown_encoding, tolerance=0.5)
                 
                 if results[0]:
-                    return True, role, username # Match found!
+                    return True, role, username, name # Match found!
             except:
                 continue # Skip corrupted data
                 
@@ -298,11 +298,26 @@ def login_with_face(image_buffer):
 def verify_login(username, password):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT role FROM users WHERE username = ? AND password = ?", (username, password))
+    # Fetch full_name along with role
+    c.execute("SELECT role, full_name FROM users WHERE username = ? AND password = ?", (username, password))
     result = c.fetchone()
     conn.close()
-    if result: return True, result[0]
-    return False, None
+    
+    if result:
+        # result[0] is role, result[1] is full_name
+        return True, result[0], result[1] 
+    else:
+        return False, None, None
+
+def get_full_name_by_username(username):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT full_name FROM users WHERE username = ?", (username,))
+    result = c.fetchone()
+    conn.close()
+    if result:
+        return result[0]
+    return "Unknown Staff"
 
 def get_all_users():
     conn = sqlite3.connect(DB_NAME)

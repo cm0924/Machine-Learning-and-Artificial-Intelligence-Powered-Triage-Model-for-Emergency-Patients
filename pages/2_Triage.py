@@ -20,7 +20,7 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.switch_page("app.py")
     st.stop()
 
-current_nurse = st.session_state.get('username', 'Unknown')
+current_nurse = st.session_state.get('full_name', 'Unknown')
 
 # ---------------------------------------------------------
 # 1. CONFIGURATION & STYLING
@@ -506,3 +506,15 @@ if st.session_state.triage_result:
                 st.success("Override Saved.")
                 time.sleep(1.5)
                 reset_form()
+
+st.sidebar.markdown("---")
+# Use get() with a default value just in case
+name_display = st.session_state.get('full_name', 'Staff Member')
+st.sidebar.caption(f"LOGGED IN AS: {name_display}")
+
+if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+    st.session_state.full_name = None # Clear it
+    st.rerun()                

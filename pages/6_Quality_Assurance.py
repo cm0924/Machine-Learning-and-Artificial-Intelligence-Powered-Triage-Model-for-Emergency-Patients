@@ -248,3 +248,15 @@ st.dataframe(
     use_container_width=True,
     hide_index=True
 )
+
+st.sidebar.markdown("---")
+# Use get() with a default value just in case
+name_display = st.session_state.get('full_name', 'Staff Member')
+st.sidebar.caption(f"LOGGED IN AS: {name_display}")
+
+if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+    st.session_state.full_name = None # Clear it
+    st.rerun()
