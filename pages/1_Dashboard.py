@@ -7,14 +7,13 @@ from datetime import datetime
 # ---------------------------------------------------------
 # SECURITY CHECK
 # ---------------------------------------------------------
+st.set_page_config(page_title="ED Live Track Board", layout="wide", page_icon="🏥")
+
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.warning("⚠️ Access Restricted. Redirecting to Login...")
     time.sleep(1)
     st.switch_page("app.py")
     st.stop()
-    
-st.set_page_config(page_title="ED Live Track Board", layout="wide", page_icon="🏥")
-
 # --- CSS STYLING ---
 st.markdown("""
 <style>

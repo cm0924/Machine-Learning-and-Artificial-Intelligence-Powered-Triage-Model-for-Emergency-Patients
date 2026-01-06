@@ -58,5 +58,5 @@ else:
         pg = st.navigation([login_page])
 
 # --- RUN THE APP ---
-st.set_page_config(page_title="Hospital AI System", layout="wide")
+st.set_page_config(page_title="MediCore System", layout="wide")
 pg.run()

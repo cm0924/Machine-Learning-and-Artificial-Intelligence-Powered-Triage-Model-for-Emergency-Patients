@@ -251,49 +251,49 @@ def register_face(user_id, image_buffer):
         print(f"ERROR: {e}")
         return False, f"System Error: {str(e)}"
 
-# 3. FUNCTION TO LOGIN WITH FACE
+# In database.py
+
 def login_with_face(image_buffer):
     """
-    Compares input photo with all users in DB.
+    Returns: success (bool), role (str), username (str), message_or_name (str)
     """
     try:
-        # 1. Load & Convert Input Image to RGB
         img = Image.open(image_buffer)
-        img = img.convert('RGB') # <--- CRITICAL FIX
+        img = img.convert('RGB')
         unknown_image = np.array(img)
         
-        # 2. Encode Input Face
         unknown_encodings = face_recognition.face_encodings(unknown_image)
         
+        # ERROR 1: No Face Found
         if len(unknown_encodings) == 0:
-            return False, None, "No face detected."
+            # Return 4 values, putting the error message in the last slot
+            return False, None, None, "⚠️ No face detected. Ensure your face is visible."
             
         unknown_encoding = unknown_encodings[0]
 
-        # 3. Fetch Registered Faces
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("SELECT id, role, full_name, username, face_encoding FROM users WHERE face_encoding IS NOT NULL")
         users = c.fetchall()
         conn.close()
 
-        # 4. Compare
         for u_id, role, name, username, face_blob in users:
             try:
                 known_encoding = pickle.loads(face_blob)
-                
-                # Compare (Tolerance: 0.5 is strict, 0.6 is loose)
                 results = face_recognition.compare_faces([known_encoding], unknown_encoding, tolerance=0.5)
                 
                 if results[0]:
-                    return True, role, username, name # Match found!
+                    # SUCCESS: Return Name in the last slot
+                    return True, role, username, name 
             except:
-                continue # Skip corrupted data
-                
-        return False, None, "Face not recognized."
+                continue
+        
+        # ERROR 2: Face Found, but not in DB
+        return False, None, None, "❌ Face not recognized. Access Denied."
         
     except Exception as e:
-        return False, None, f"Error: {e}"
+        # ERROR 3: System Crash
+        return False, None, None, f"System Error: {str(e)}"
     
 def verify_login(username, password):
     conn = sqlite3.connect(DB_NAME)

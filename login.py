@@ -143,22 +143,28 @@ if not st.session_state.logged_in:
                 # Camera Input
                 img_buffer = st.camera_input("Biometric Scanner", label_visibility="collapsed")
                 
-                # In login.py (Tab 2: Face Login)
+                # In login.py (Tab 2: Face ID Section)
 
                 if img_buffer is not None:
                     with st.spinner("Processing Biometric Data..."):
-                        # Unpack 4 values now
-                        success, role, username, full_name_res = database.login_with_face(img_buffer)
+                        
+                        # Unpack the 4 values
+                        # result_msg will be the Name (if success) OR the Error Message (if fail)
+                        success, role, username, result_msg = database.login_with_face(img_buffer)
                         
                         if success:
                             st.session_state.logged_in = True
                             st.session_state.user_role = role
                             st.session_state.username = username
-                            st.session_state.full_name = full_name_res # <--- Store it!
+                            st.session_state.full_name = result_msg # result_msg is the Name here
                             
-                            st.success(f"✅ Identity Verified: {full_name_res}")
+                            st.success(f"✅ Identity Verified: {result_msg}")
                             time.sleep(1)
                             st.rerun()
+                        else:
+                            # If failed, result_msg contains "No face detected" or "Access Denied"
+                            st.error(result_msg) 
+                            # Optional: Add a button to retry or just let them take another picture
 
     # --- FOOTER ---
     st.markdown("""
