@@ -109,7 +109,7 @@ with t1:
                 st.error(f"Error updating database: {e}")
 
 # =========================================================
-# TAB 2: CREATE (Add New User)
+# TAB 2: CREATE (Add New User) - WITH DUPLICATE CHECKS
 # =========================================================
 with t2:
     st.subheader("Register New Staff Member")
@@ -128,18 +128,30 @@ with t2:
             submitted = st.form_submit_button("➕ Create User", type="primary", use_container_width=True)
             
             if submitted:
-                if new_name and new_user and new_pass:
-                    # Database Call
+                # 1. Check for Empty Fields
+                if not (new_name and new_user and new_pass):
+                    st.warning("⚠️ Please fill in all fields.")
+                
+                # 2. Check for Duplicate USERNAME
+                # We check against the 'users_df' we loaded at the top of the page
+                elif new_user in users_df['username'].values:
+                    st.error(f"❌ Error: The username '{new_user}' is already taken.")
+                
+                # 3. Check for Duplicate FULL NAME (Case Insensitive)
+                # This prevents creating "John Doe" if "john doe" exists
+                elif new_name.strip().lower() in users_df['full_name'].str.lower().values:
+                    st.error(f"❌ Error: Staff member '{new_name}' is already registered.")
+
+                # 4. If All Checks Pass -> Send to Database
+                else:
                     success = database.add_user(new_name, new_user, new_pass, new_role)
                     if success:
                         st.success(f"✅ User '{new_user}' created successfully!")
                         time.sleep(1)
                         st.rerun()
                     else:
-                        st.error("❌ Username already exists. Please choose another.")
-                else:
-                    st.warning("⚠️ Please fill in all fields.")
-
+                        # Fallback if database rejects it (e.g., race condition)
+                        st.error("❌ Database Error: Username might be taken.")
 # =========================================================
 # TAB 3: FACE ID (Clean Setup)
 # =========================================================

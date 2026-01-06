@@ -443,13 +443,13 @@ with t2:
                 n_type = st.session_state.note_type_input
                 if content:
                     timestamp = time.strftime("%Y-%m-%d %H:%M")
-                    user = st.session_state.get('username', 'Staff')
+                    user = st.session_state.get('full_name', 'Staff')
                     role = st.session_state.get('user_role', '').title()
                     formatted = f"\n\n{'='*40}\n[{timestamp}] {n_type.upper()} by {user} ({role})\n{'='*40}\n{content}"
                     
                     updated = (patient['nurse_notes'] or "") + formatted
                     database.update_full_patient_record(
-                        pid, patient['name'], patient['age'], patient['gender'], patient['complaint'],
+                        pid, patient['name'], patient.get('dob'),patient['age'], patient['gender'], patient['complaint'],
                         patient['arrival_mode'], patient['injury'], patient['mental'], patient['pain'], patient['nrs_pain'],
                         patient['sbp'], patient['dbp'], patient['hr'], patient['rr'], patient['bt'], patient['saturation'],
                         patient['triage_level'], patient['assigned_md'], patient['assigned_nppa'], patient['assigned_nurse'], 
