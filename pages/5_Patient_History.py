@@ -264,7 +264,7 @@ with tab_analytics:
     with row1_2:
         # 1. Create a Clean Summary Dataframe
         # This ensures the Label "LWBS" stays locked to the Count "1"
-        clean_disp = all_patients['final_disposition'].fillna('Active/Unknown')
+        clean_disp = all_patients['final_disposition'].fillna('Active')
         disp_summary = clean_disp.value_counts().reset_index()
         disp_summary.columns = ['Disposition', 'Count']
         

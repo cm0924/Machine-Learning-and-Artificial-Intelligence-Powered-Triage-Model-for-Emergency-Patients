@@ -505,7 +505,7 @@ with t2:
                     # Assuming you have a function to update just the team, 
                     # otherwise use update_full_patient_record logic
                     database.update_full_patient_record(
-                        pid, patient['name'], patient['age'], patient['gender'], patient['complaint'],
+                        pid, patient['name'], patient.get('dob'), patient['age'], patient['gender'], patient['complaint'],
                         patient['arrival_mode'], patient['injury'], patient['mental'], patient['pain'], patient['nrs_pain'],
                         patient['sbp'], patient['dbp'], patient['hr'], patient['rr'], patient['bt'], patient['saturation'],
                         patient['triage_level'], 

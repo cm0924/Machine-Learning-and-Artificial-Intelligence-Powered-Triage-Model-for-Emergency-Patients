@@ -1,2 +1,9 @@
 conda activate fyp_env
 python -m streamlit run app.py
+
+admin admin123
+aaron 123
+nora pass123
+
+80 50 140 Unresponsive
+120 80 70 Alert Skin Alergy
