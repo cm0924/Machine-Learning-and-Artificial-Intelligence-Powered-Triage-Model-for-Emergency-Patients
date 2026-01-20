@@ -7,3 +7,5 @@ nora pass123
 
 80 50 140 Unresponsive
 120 80 70 Alert Skin Alergy
+
+breathing issue

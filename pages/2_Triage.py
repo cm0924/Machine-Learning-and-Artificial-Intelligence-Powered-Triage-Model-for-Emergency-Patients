@@ -447,7 +447,7 @@ if st.session_state.triage_result:
         <div class="triage-card" style="border-left: 15px solid {border_col};">
             <h5 style="margin:0; color: #555;">RECOMMENDED KTAS</h5>
             <h1 style="font-size: 90px; margin:0; line-height: 1; color: {border_col};">Level {lvl}</h1>
-            <p style="margin-top:10px;"><b>Confidence:</b> {res['conf']:.1f}%</p>
+            <p style="margin-top:10px; color: #333;"><b>Confidence:</b> {res['conf']:.1f}%</p>
         </div>
         """, unsafe_allow_html=True)
         if res['reason']: st.error(res['reason'], icon="🚨")
